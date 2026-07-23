@@ -46,3 +46,9 @@ app.*.map.json
 
 # Uber-like design reference (React/Vite prototype — not part of the Flutter app)
 Uber-like design/
+
+# Kiro IDE files
+.kiro/
+
+# Flutter metadata
+.metadata
