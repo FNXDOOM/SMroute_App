@@ -12,4 +12,14 @@ class PaymentCard {
     required this.expiry,
     required this.isPrimary,
   });
+
+  factory PaymentCard.fromJson(Map<String, dynamic> json) {
+    return PaymentCard(
+      id: json['id'].toString(),
+      brand: (json['brand'] ?? 'Card').toString(),
+      last4: (json['last4'] ?? '0000').toString(),
+      expiry: (json['expiry'] ?? '').toString(),
+      isPrimary: json['is_primary'] == true,
+    );
+  }
 }
