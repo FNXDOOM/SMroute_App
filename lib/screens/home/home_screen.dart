@@ -41,7 +41,11 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Listener only triggers a rebuild of the search sub-widget via ValueListenableBuilder.
+    // Eagerly seed notification badge + trip history from the backend.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<NotificationProvider>().loadNotifications(connectRealtime: true);
+      context.read<RideProvider>().loadMyRides(silent: true);
+    });
   }
 
   @override

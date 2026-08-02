@@ -26,9 +26,21 @@ class _RideSelectScreenState extends State<RideSelectScreen> {
     });
   }
 
-  void _confirmRide() {
-    context.read<RideProvider>().confirmBooking();
-    Navigator.pushNamed(context, '/ride-confirm', arguments: _selected);
+  void _confirmRide() async {
+    final provider = context.read<RideProvider>();
+    final ok = await provider.confirmBooking();
+    if (!mounted) return;
+    if (ok) {
+      Navigator.pushNamed(context, '/ride-confirm', arguments: _selected);
+    } else {
+      final msg = provider.error ?? 'Booking failed. Please try again.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    }
   }
 
   @override
@@ -147,12 +159,23 @@ class _RideSelectScreenState extends State<RideSelectScreen> {
             ),
 
             // 4. Book button
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: ElevatedButton(
-                onPressed: _confirmRide,
-                child: Text(
-                    'Book ${_selected.name} · ${_selected.priceRange}'),
+            Consumer<RideProvider>(
+              builder: (context, provider, _) => Padding(
+                padding: const EdgeInsets.all(16),
+                child: ElevatedButton(
+                  onPressed: provider.isBooking ? null : _confirmRide,
+                  child: provider.isBooking
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            color: Colors.black,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : Text(
+                          'Book ${_selected.name} · ${_selected.priceRange}'),
+                ),
               ),
             ),
           ],

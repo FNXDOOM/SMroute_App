@@ -4,8 +4,21 @@ import '../../providers/notification_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/notification_tile.dart';
 
-class InboxScreen extends StatelessWidget {
+class InboxScreen extends StatefulWidget {
   const InboxScreen({super.key});
+
+  @override
+  State<InboxScreen> createState() => _InboxScreenState();
+}
+
+class _InboxScreenState extends State<InboxScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<NotificationProvider>().loadNotifications();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -119,6 +132,11 @@ class InboxScreen extends StatelessWidget {
             Expanded(
               child: Consumer<NotificationProvider>(
                 builder: (context, provider, _) {
+                  if (provider.isLoading && !provider.isLoaded) {
+                    return const Center(
+                      child: CircularProgressIndicator(color: AppTheme.accentBlue),
+                    );
+                  }
                   final filtered = provider.filteredNotifications;
                   if (filtered.isEmpty) {
                     return const Center(
