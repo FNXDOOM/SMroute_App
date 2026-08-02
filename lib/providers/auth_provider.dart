@@ -1,14 +1,26 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+
 import '../models/user.dart';
+import '../services/api_client.dart';
 
 class AuthProvider extends ChangeNotifier {
+  final ApiClient _api = ApiClient.instance;
+
   AppUser? _currentUser;
   bool _isLoading = false;
+  bool _isBootstrapping = true;
   String? _error;
+
+  AuthProvider() {
+    unawaited(restoreSession());
+  }
 
   // Getters
   AppUser? get currentUser => _currentUser;
   bool get isLoading => _isLoading;
+  bool get isBootstrapping => _isBootstrapping;
   String? get error => _error;
   bool get isAuthenticated => _currentUser != null;
 
@@ -17,8 +29,49 @@ class AuthProvider extends ChangeNotifier {
     return fields.any((f) => f.trim().isEmpty);
   }
 
-  /// Simulates login with a 1-second delay.
-  /// Requirements 3.1, 3.2, 3.3
+  String _messageForException(Object error) {
+    if (error is ApiException) return error.message;
+    return 'Something went wrong. Please try again.';
+  }
+
+  Future<void> _applyTokenResponse(
+    Map<String, dynamic> payload, {
+    String phoneFallback = '',
+  }) async {
+    final token = payload['access_token']?.toString();
+    if (token != null && token.isNotEmpty) {
+      await _api.setToken(token);
+    }
+
+    final userJson = payload['user'];
+    if (userJson is Map<String, dynamic>) {
+      _currentUser = AppUser.fromJson(userJson, phoneFallback: phoneFallback);
+    }
+  }
+
+  Future<void> restoreSession() async {
+    _isBootstrapping = true;
+    notifyListeners();
+
+    try {
+      await _api.initialize();
+      final token = await _api.token;
+      if (token == null || token.isEmpty) {
+        _currentUser = null;
+        return;
+      }
+
+      final userJson = await _api.getJson('/auth/me');
+      _currentUser = AppUser.fromJson(userJson as Map<String, dynamic>);
+    } catch (_) {
+      await _api.clearToken();
+      _currentUser = null;
+    } finally {
+      _isBootstrapping = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> login(String email, String password) async {
     if (_hasEmptyFields([email, password])) {
       _error = 'Please fill in all fields.';
@@ -30,19 +83,24 @@ class AuthProvider extends ChangeNotifier {
     _error = null;
     notifyListeners();
 
-    await Future.delayed(const Duration(seconds: 1));
-
-    _currentUser = AppUser(
-      name: 'Alex Rivera',
-      email: email,
-      phone: '+1 (555) 000-1234',
-    );
-    _isLoading = false;
-    notifyListeners();
+    try {
+      final response = await _api.postJson(
+        '/auth/login',
+        authenticated: false,
+        body: {
+          'email': email.trim(),
+          'password': password,
+        },
+      );
+      await _applyTokenResponse(response as Map<String, dynamic>);
+    } catch (error) {
+      _error = _messageForException(error);
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
-  /// Simulates registration with a 1-second delay.
-  /// Requirements 3.1, 3.2, 3.3
   Future<void> register(
     String name,
     String email,
@@ -59,16 +117,79 @@ class AuthProvider extends ChangeNotifier {
     _error = null;
     notifyListeners();
 
-    await Future.delayed(const Duration(seconds: 1));
+    try {
+      await _api.postJson(
+        '/auth/register',
+        authenticated: false,
+        body: {
+          'name': name.trim(),
+          'email': email.trim(),
+          'password': password,
+          'role': 'passenger',
+        },
+      );
 
-    _currentUser = AppUser(name: name, email: email, phone: phone);
-    _isLoading = false;
+      final loginResponse = await _api.postJson(
+        '/auth/login',
+        authenticated: false,
+        body: {
+          'email': email.trim(),
+          'password': password,
+        },
+      );
+      await _applyTokenResponse(
+        loginResponse as Map<String, dynamic>,
+        phoneFallback: phone.trim(),
+      );
+      _currentUser = _currentUser?.copyWithPhone(phone.trim()) ??
+          AppUser(
+            name: name.trim(),
+            email: email.trim(),
+            phone: phone.trim(),
+          );
+    } catch (error) {
+      _error = _messageForException(error);
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Updates the current user's profile (name, email, phone).
+  Future<String?> updateProfile({
+    required String name,
+    required String email,
+    required String phone,
+  }) async {
+    _isLoading = true;
+    _error = null;
     notifyListeners();
+
+    try {
+      final response = await _api.patchJson(
+        '/auth/me',
+        body: {
+          'name': name.trim(),
+          'email': email.trim(),
+          'phone': phone.trim(),
+        },
+      );
+      _currentUser = AppUser.fromJson(response as Map<String, dynamic>);
+      return null; // success
+    } catch (error) {
+      _error = _messageForException(error);
+      return _error;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
   /// Clears the current user session.
-  void logout() {
+  Future<void> logout() async {
+    await _api.clearToken();
     _currentUser = null;
+    _error = null;
     notifyListeners();
   }
 }

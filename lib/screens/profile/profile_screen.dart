@@ -79,6 +79,136 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  void _showEditProfileSheet(BuildContext context) {
+    final user = context.read<AuthProvider>().currentUser;
+    if (user == null) return;
+
+    final nameCtrl = TextEditingController(text: user.name);
+    final emailCtrl = TextEditingController(text: user.email);
+    final phoneCtrl = TextEditingController(text: user.phone);
+    final formKey = GlobalKey<FormState>();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppTheme.surfaceColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final auth = ctx.read<AuthProvider>();
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+              24, 24, 24,
+              24 + MediaQuery.of(ctx).viewInsets.bottom,
+            ),
+            child: Form(
+              key: formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Handle bar
+                  Center(
+                    child: Container(
+                      width: 40, height: 4,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF444444),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Edit Profile',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  _ProfileField(
+                    controller: nameCtrl,
+                    label: 'Full Name',
+                    icon: Icons.person_outline,
+                    validator: (v) => (v == null || v.trim().isEmpty) ? 'Name is required' : null,
+                  ),
+                  const SizedBox(height: 12),
+                  _ProfileField(
+                    controller: emailCtrl,
+                    label: 'Email',
+                    icon: Icons.email_outlined,
+                    keyboardType: TextInputType.emailAddress,
+                    validator: (v) {
+                      if (v == null || v.trim().isEmpty) return 'Email is required';
+                      if (!v.contains('@')) return 'Enter a valid email';
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  _ProfileField(
+                    controller: phoneCtrl,
+                    label: 'Phone',
+                    icon: Icons.phone_outlined,
+                    keyboardType: TextInputType.phone,
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.accentBlue,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(double.infinity, 52),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    onPressed: auth.isLoading
+                        ? null
+                        : () async {
+                            if (!formKey.currentState!.validate()) return;
+                            final error = await auth.updateProfile(
+                              name: nameCtrl.text,
+                              email: emailCtrl.text,
+                              phone: phoneCtrl.text,
+                            );
+                            if (!ctx.mounted) return;
+                            Navigator.pop(ctx);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  error ?? 'Profile updated!',
+                                ),
+                                backgroundColor: error == null ? Colors.green.shade700 : Colors.red.shade700,
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          },
+                    child: auth.isLoading
+                        ? const SizedBox(
+                            width: 20, height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text('Save changes', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(fontSize: 14, color: Color(0xFF888888)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().currentUser;
@@ -146,18 +276,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         Positioned(
                           bottom: -2,
                           right: -2,
-                          child: Container(
-                            width: 20,
-                            height: 20,
-                            decoration: const BoxDecoration(
-                              color: Colors.white,
-                              shape: BoxShape.circle,
-                            ),
-                            alignment: Alignment.center,
-                            child: const Icon(
-                              Icons.edit,
-                              color: Colors.black,
-                              size: 10,
+                          child: GestureDetector(
+                            onTap: () => _showEditProfileSheet(context),
+                            child: Container(
+                              width: 22,
+                              height: 22,
+                              decoration: const BoxDecoration(
+                                color: AppTheme.accentBlue,
+                                shape: BoxShape.circle,
+                              ),
+                              alignment: Alignment.center,
+                              child: const Icon(
+                                Icons.edit,
+                                color: Colors.white,
+                                size: 11,
+                              ),
                             ),
                           ),
                         ),
@@ -482,6 +615,58 @@ class _MenuTile extends StatelessWidget {
             endIndent: 16,
           ),
       ],
+    );
+  }
+}
+
+// ── Profile form field ────────────────────────────────────────────────────────
+
+class _ProfileField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final TextInputType keyboardType;
+  final String? Function(String?)? validator;
+
+  const _ProfileField({
+    required this.controller,
+    required this.label,
+    required this.icon,
+    this.keyboardType = TextInputType.text,
+    this.validator,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      controller: controller,
+      keyboardType: keyboardType,
+      validator: validator,
+      style: const TextStyle(color: Colors.white, fontSize: 14),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: const TextStyle(color: Color(0xFF888888), fontSize: 13),
+        prefixIcon: Icon(icon, color: const Color(0xFF888888), size: 18),
+        filled: true,
+        fillColor: const Color(0xFF1C1C1C),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF333333)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: AppTheme.accentBlue),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Colors.red),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Colors.red),
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      ),
     );
   }
 }

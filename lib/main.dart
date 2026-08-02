@@ -31,11 +31,16 @@ class SmartRouteApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => RideProvider()),
-        ChangeNotifierProvider(create: (_) => NotificationProvider()),
+        ChangeNotifierProxyProvider<RideProvider, NotificationProvider>(
+          create: (_) => NotificationProvider(),
+          update: (_, rideProvider, notifProvider) {
+            notifProvider ??= NotificationProvider();
+            notifProvider.onRideStatusUpdated = rideProvider.handleRideStatusUpdate;
+            return notifProvider;
+          },
+        ),
         ChangeNotifierProvider(create: (_) => PaymentProvider()),
       ],
-      // Use Builder instead of Consumer so MaterialApp is only built once.
-      // Auth guard is handled in onGenerateRoute by reading the provider lazily.
       child: Builder(
         builder: (context) {
           return MaterialApp(
@@ -44,7 +49,8 @@ class SmartRouteApp extends StatelessWidget {
             debugShowCheckedModeBanner: false,
             initialRoute: '/',
             routes: {
-              '/': (_) => const LoginScreen(),
+              '/': (_) => const _BootstrapScreen(),
+              '/login': (_) => const LoginScreen(),
               '/register': (_) => const RegisterScreen(),
               '/home': (_) => const HomeScreen(),
               '/ride-select': (_) => const RideSelectScreen(),
@@ -56,13 +62,14 @@ class SmartRouteApp extends StatelessWidget {
               '/profile': (_) => const ProfileScreen(),
             },
             onGenerateRoute: (settings) {
-              final publicRoutes = {'/', '/register'};
+              final publicRoutes = {'/', '/login', '/register'};
               final auth = Provider.of<AuthProvider>(context, listen: false);
               if (!auth.isAuthenticated &&
+                  !auth.isBootstrapping &&
                   !publicRoutes.contains(settings.name)) {
                 return MaterialPageRoute(
                   builder: (_) => const LoginScreen(),
-                  settings: const RouteSettings(name: '/'),
+                  settings: const RouteSettings(name: '/login'),
                 );
               }
               return null;
@@ -74,4 +81,39 @@ class SmartRouteApp extends StatelessWidget {
   }
 }
 
-// No placeholder needed — all routes use real screens.
+/// Waits for the stored session to be validated, then routes accordingly.
+class _BootstrapScreen extends StatelessWidget {
+  const _BootstrapScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>();
+
+    if (auth.isBootstrapping) {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('🚗', style: TextStyle(fontSize: 48)),
+              SizedBox(height: 24),
+              CircularProgressIndicator(color: AppTheme.accentBlue),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Session restore complete — navigate without keeping this in the stack.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Navigator.pushReplacementNamed(
+        context,
+        auth.isAuthenticated ? '/home' : '/login',
+      );
+    });
+
+    // Show nothing while the post-frame callback fires.
+    return const Scaffold(backgroundColor: Colors.black);
+  }
+}
