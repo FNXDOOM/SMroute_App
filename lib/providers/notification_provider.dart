@@ -20,6 +20,12 @@ class NotificationProvider extends ChangeNotifier {
   String? _error;
   WebSocketChannel? _channel;
   StreamSubscription? _socketSubscription;
+  String? _connectedToken;
+  int _reconnectAttempts = 0;
+  Timer? _reconnectTimer;
+  bool _disposed = false;
+
+  static const int _maxReconnectAttempts = 3;
 
   NotifFilter get activeFilter => _filter;
   bool get isLoading => _isLoading;
@@ -33,11 +39,17 @@ class NotificationProvider extends ChangeNotifier {
   List<AppNotification> get filteredNotifications {
     switch (_filter) {
       case NotifFilter.rides:
-        return _notifications.where((n) => n.type == NotificationType.ride).toList(growable: false);
+        return List.unmodifiable(
+          _notifications.where((n) => n.type == NotificationType.ride),
+        );
       case NotifFilter.promos:
-        return _notifications.where((n) => n.type == NotificationType.promo).toList(growable: false);
+        return List.unmodifiable(
+          _notifications.where((n) => n.type == NotificationType.promo),
+        );
       case NotifFilter.payments:
-        return _notifications.where((n) => n.type == NotificationType.payment).toList(growable: false);
+        return List.unmodifiable(
+          _notifications.where((n) => n.type == NotificationType.payment),
+        );
       case NotifFilter.all:
         return List.unmodifiable(_notifications);
     }
@@ -49,19 +61,29 @@ class NotificationProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final response = await _api.getJson('/notifications?limit=100');
-      final payload = response as Map<String, dynamic>;
-      final items = (payload['notifications'] as List<dynamic>? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(AppNotification.fromJson)
-          .toList(growable: false);
+      final response = await _api.getJson('/notifications/?limit=100');
+      if (response is! Map<String, dynamic>) {
+        throw const FormatException('Invalid notifications response');
+      }
+      final raw = response['notifications'] as List<dynamic>? ?? const [];
+      final items = <AppNotification>[];
+      for (final entry in raw) {
+        if (entry is! Map<String, dynamic>) continue;
+        try {
+          items.add(AppNotification.fromJson(entry));
+        } on FormatException {
+          continue;
+        }
+      }
       _notifications
         ..clear()
         ..addAll(items);
 
       if (connectRealtime) {
-        _connectRealtime();
+        await _connectRealtime();
       }
+    } on FormatException {
+      _error = 'Unexpected server response.';
     } catch (error) {
       _error = error is ApiException ? error.message : 'Unable to load notifications.';
     } finally {
@@ -105,29 +127,60 @@ class NotificationProvider extends ChangeNotifier {
   }
 
   void clear() {
+    _disconnectRealtime();
     _notifications.clear();
     _filter = NotifFilter.all;
     _error = null;
+    _isLoaded = false;
     notifyListeners();
   }
 
-  void _connectRealtime() {
-    if (_channel != null) return;
+  /// Reconnects when the auth token changes (login/logout/refresh).
+  Future<void> reconnectIfTokenChanged() async {
+    final token = await _api.token;
+    if (token != _connectedToken) {
+      _disconnectRealtime();
+      if (token != null && token.isNotEmpty) {
+        await _connectRealtime();
+      }
+    }
+  }
+
+  Future<void> _connectRealtime() async {
+    if (_channel != null || _disposed) return;
+
+    // Backend requires the JWT as a `token` query param and will close the
+    // socket immediately if it's missing — grab it before connecting.
+    final token = await _api.token;
+    if (token == null || token.isEmpty) return;
+
     final wsUrl = _api.baseUrl
         .replaceFirst('https://', 'wss://')
         .replaceFirst('http://', 'ws://');
-    final uri = Uri.parse('$wsUrl/notifications/ws/notifications');
+    // Correct backend path is /notifications/ws (mounted under the
+    // /notifications router prefix) — not /notifications/ws/notifications.
+    final uri = Uri.parse('$wsUrl/notifications/ws').replace(
+      queryParameters: {'token': token},
+    );
+    _connectedToken = token;
     _channel = WebSocketChannel.connect(uri);
     _socketSubscription = _channel!.stream.listen(
       (message) {
+        _reconnectAttempts = 0;
         try {
           final data = jsonDecode(message as String) as Map<String, dynamic>;
           if (data['type'] == 'notification' && data['notification'] is Map<String, dynamic>) {
             final raw = data['notification'] as Map<String, dynamic>;
-            _upsertNotification(AppNotification.fromJson(raw));
+            try {
+              _upsertNotification(AppNotification.fromJson(raw));
+            } on FormatException {
+              return;
+            }
 
             if (raw['notification_type'] == 'ride_status_updated') {
-              final metadata = raw['metadata'] as Map<String, dynamic>?;
+              // Backend serializes this field as `notification_metadata`,
+              // not `metadata`.
+              final metadata = raw['notification_metadata'] as Map<String, dynamic>?;
               if (metadata != null && metadata['new_status'] != null) {
                 onRideStatusUpdated?.call(metadata['new_status'].toString());
               }
@@ -137,14 +190,41 @@ class NotificationProvider extends ChangeNotifier {
           // Ignore malformed socket payloads.
         }
       },
-      onError: (_) {},
-      onDone: () {
-        _channel = null;
-        _socketSubscription?.cancel();
-        _socketSubscription = null;
-      },
+      onError: (_) => _scheduleReconnect(),
+      onDone: () => _scheduleReconnect(),
       cancelOnError: false,
     );
+  }
+
+  void _scheduleReconnect() {
+    _disconnectChannelOnly();
+    if (_disposed) return;
+    if (_reconnectAttempts >= _maxReconnectAttempts) return;
+    _reconnectAttempts++;
+    _reconnectTimer?.cancel();
+    // Linear backoff: 2s, 4s, 6s.
+    _reconnectTimer = Timer(Duration(seconds: 2 * _reconnectAttempts), () {
+      if (!_disposed) unawaited(_connectRealtime());
+    });
+  }
+
+  void _disconnectChannelOnly() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _socketSubscription?.cancel();
+    _socketSubscription = null;
+    try {
+      _channel?.sink.close();
+    } catch (_) {
+      // Already closed.
+    }
+    _channel = null;
+  }
+
+  void _disconnectRealtime() {
+    _disconnectChannelOnly();
+    _connectedToken = null;
+    _reconnectAttempts = 0;
   }
 
   void _upsertNotification(AppNotification notification) {
@@ -159,8 +239,8 @@ class NotificationProvider extends ChangeNotifier {
 
   @override
   void dispose() {
-    _socketSubscription?.cancel();
-    _channel?.sink.close();
+    _disposed = true;
+    _disconnectRealtime();
     super.dispose();
   }
 }

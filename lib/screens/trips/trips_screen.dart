@@ -254,10 +254,17 @@ class _RideCard extends StatelessWidget {
 
   String _formatDate(DateTime? dt) {
     if (dt == null) return 'Unknown date';
-    final diff = DateTime.now().difference(dt.toLocal());
-    if (diff.inDays == 0) return 'Today, ${_hm(dt)}';
-    if (diff.inDays == 1) return 'Yesterday, ${_hm(dt)}';
-    return '${_monthName(dt.month)} ${dt.day}, ${_hm(dt)}';
+    final local = dt.toLocal();
+    final now = DateTime.now();
+    // Compare calendar days, not 24h windows (avoids midnight bug where
+    // 11pm yesterday vs 1am today shows "Today").
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(local.year, local.month, local.day);
+    final dayDiff = today.difference(day).inDays;
+    if (dayDiff == 0) return 'Today, ${_hm(local)}';
+    if (dayDiff == 1) return 'Yesterday, ${_hm(local)}';
+    if (dayDiff < 0) return '${_monthName(local.month)} ${local.day}, ${_hm(local)}';
+    return '${_monthName(local.month)} ${local.day}, ${_hm(local)}';
   }
 
   String _hm(DateTime dt) {

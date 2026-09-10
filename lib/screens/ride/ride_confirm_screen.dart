@@ -10,22 +10,118 @@ class RideConfirmScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ride = ModalRoute.of(context)!.settings.arguments as RideOption?;
+    final args = ModalRoute.of(context)?.settings.arguments;
+    final rideArg = args is RideOption ? args : null;
 
     return Scaffold(
       backgroundColor: AppTheme.scaffoldBg,
       body: SafeArea(
         child: Consumer<RideProvider>(
           builder: (context, provider, _) {
+            // Prefer the provider's authoritative booking; fall back to the
+            // route argument (e.g. after process restore).
+            final ride = provider.selectedOption ?? rideArg;
             switch (provider.stage) {
               case BookingStage.matching:
-                return _MatchingView();
+                return const _MatchingView();
               case BookingStage.found:
                 return _DriverFoundView(ride: ride, arriving: false);
               case BookingStage.arriving:
                 return _DriverFoundView(ride: ride, arriving: true);
+              case BookingStage.completed:
+                return _TerminalView(
+                  ride: ride,
+                  title: 'Ride completed',
+                  subtitle: 'Thanks for riding with SmartRoute.',
+                  isSuccess: true,
+                );
+              case BookingStage.cancelled:
+                return _TerminalView(
+                  ride: ride,
+                  title: 'Ride cancelled',
+                  subtitle: 'This ride was cancelled. No charge was made.',
+                  isSuccess: false,
+                );
             }
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _TerminalView extends StatelessWidget {
+  final RideOption? ride;
+  final String title;
+  final String subtitle;
+  final bool isSuccess;
+
+  const _TerminalView({
+    required this.ride,
+    required this.title,
+    required this.subtitle,
+    required this.isSuccess,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: (isSuccess ? Colors.green : Colors.red)
+                    .withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                isSuccess ? '✓' : '✕',
+                style: TextStyle(
+                  fontSize: 36,
+                  color: isSuccess ? Colors.green : Colors.red.shade400,
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(title,
+                style: AppTheme.headingMedium, textAlign: TextAlign.center),
+            const SizedBox(height: 8),
+            Text(subtitle,
+                style: const TextStyle(
+                    fontSize: 14, color: AppTheme.textTertiary),
+                textAlign: TextAlign.center),
+            if (ride != null) ...[
+              const SizedBox(height: 12),
+              Text('${ride!.name} · ${ride!.priceRange}',
+                  style: const TextStyle(
+                      fontSize: 13, color: Color(0xFFAAAAAA))),
+            ],
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: () => Navigator.pushNamedAndRemoveUntil(
+                context,
+                '/rating',
+                (_) => false,
+              ),
+              child: const Text('Continue to rating'),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: () => Navigator.pushNamedAndRemoveUntil(
+                context,
+                '/home',
+                (_) => false,
+              ),
+              child: const Text('Back to home',
+                  style: TextStyle(color: Color(0xFF888888))),
+            ),
+          ],
         ),
       ),
     );
@@ -35,6 +131,8 @@ class RideConfirmScreen extends StatelessWidget {
 // ── Matching stage ─────────────────────────────────────────────────────────
 
 class _MatchingView extends StatelessWidget {
+  const _MatchingView();
+
   @override
   Widget build(BuildContext context) {
     return Center(
@@ -80,15 +178,33 @@ class _DriverFoundView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final destination =
-        context.read<RideProvider>().destination ?? '';
+    final rideProvider = context.watch<RideProvider>();
+    final destination = rideProvider.destination ?? '';
+    final vehicle = rideProvider.assignedVehicle;
+
+    // Vehicle make/model has no backend equivalent (Vehicle only stores
+    // license_plate, capacity, status, lat/lng) — plate + status are real,
+    // the "Toyota Camry"-style description stays a placeholder until the
+    // backend adds a vehicle model/make field.
+    final vehicleLine = vehicle != null
+        ? vehicle.licensePlate
+        : (rideProvider.vehicleAssignmentTimedOut
+            ? 'Not available for this ride'
+            : 'Assigning a vehicle\u2026');
+    final plateLine = vehicle != null ? vehicle.status : '\u2014';
 
     final details = [
-      _DetailRow(label: 'Vehicle', value: 'Toyota Camry'),
-      _DetailRow(label: 'Plate', value: 'SF · 7K92M'),
+      _DetailRow(label: 'Vehicle', value: vehicleLine),
+      _DetailRow(label: 'Status', value: plateLine),
       _DetailRow(label: 'Ride type', value: ride?.name ?? ''),
       _DetailRow(label: 'Destination', value: destination),
       _DetailRow(label: 'Estimated fare', value: ride?.priceRange ?? ''),
+      if (vehicle?.lat != null && vehicle?.lng != null)
+        _DetailRow(
+          label: 'Live position',
+          value:
+              '${vehicle!.lat!.toStringAsFixed(4)}, ${vehicle.lng!.toStringAsFixed(4)}',
+        ),
     ];
 
     return SingleChildScrollView(
@@ -123,12 +239,8 @@ class _DriverFoundView extends StatelessWidget {
                       ),
                       alignment: Alignment.center,
                       child: const Text(
-                        'M',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 20,
-                        ),
+                        '\ud83d\ude97',
+                        style: TextStyle(fontSize: 22),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -137,8 +249,11 @@ class _DriverFoundView extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // No driver-identity field exists on the backend
+                          // Vehicle/User models yet, so this stays generic
+                          // rather than showing a fabricated name.
                           const Text(
-                            'Marcus T.',
+                            'Your driver',
                             style: TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -146,34 +261,31 @@ class _DriverFoundView extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          Row(
-                            children: const [
-                              Text('★',
-                                  style: TextStyle(
-                                      color: Colors.yellow, fontSize: 13)),
-                              SizedBox(width: 4),
-                              Text('4.98',
-                                  style: TextStyle(
-                                      color: Colors.white, fontSize: 13)),
-                              SizedBox(width: 6),
-                              Text('·',
-                                  style: TextStyle(
-                                      color: Color(0xFFAAAAAA), fontSize: 13)),
-                              SizedBox(width: 6),
-                              Text('1,204 trips',
-                                  style: TextStyle(
-                                      color: Color(0xFFAAAAAA), fontSize: 13)),
-                            ],
+                          Text(
+                            vehicle != null
+                                ? 'Vehicle #${vehicle.id}'
+                                : 'Matching to a vehicle',
+                            style: const TextStyle(
+                              color: Color(0xFFAAAAAA),
+                              fontSize: 13,
+                            ),
                           ),
                         ],
                       ),
                     ),
-                    // Action buttons
+                    // Action buttons (driver contact not yet supported
+                    // by backend — show feedback instead of dead buttons).
                     Row(
                       children: [
-                        _CircleIconButton(label: '💬'),
+                        _CircleIconButton(
+                          label: '\ud83d\udcac',
+                          tooltip: 'Chat with driver (coming soon)',
+                        ),
                         const SizedBox(width: 8),
-                        _CircleIconButton(label: '📞'),
+                        _CircleIconButton(
+                          label: '\ud83d\udcde',
+                          tooltip: 'Call driver (coming soon)',
+                        ),
                       ],
                     ),
                   ],
@@ -194,12 +306,13 @@ class _DriverFoundView extends StatelessWidget {
 
           const SizedBox(height: 16),
 
-          // Done button
+          // Done button — always keep a way back home even when /home
+          // isn't already in the stack (deep links, restores).
           ElevatedButton(
             onPressed: () => Navigator.pushNamedAndRemoveUntil(
               context,
               '/rating',
-              (r) => r.settings.name == '/home',
+              (_) => false,
             ),
             child: const Text('Done'),
           ),
@@ -335,13 +448,20 @@ class _DetailRow extends StatelessWidget {
 
 class _CircleIconButton extends StatelessWidget {
   final String label;
+  final String tooltip;
 
-  const _CircleIconButton({required this.label});
+  const _CircleIconButton({required this.label, this.tooltip = 'Coming soon'});
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () {},
+      onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(tooltip),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ),
+      ),
       child: Container(
         width: 40,
         height: 40,

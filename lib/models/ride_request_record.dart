@@ -34,13 +34,26 @@ class RideRequestRecord {
     this.rideOptionPrice,
   });
 
+  static double _parseCoord(dynamic raw) {
+    if (raw is num) return raw.toDouble();
+    if (raw is String) return double.tryParse(raw) ?? 0.0;
+    return 0.0;
+  }
+
   factory RideRequestRecord.fromJson(Map<String, dynamic> json) {
+    final rawId = json['id'];
+    final parsedId = rawId is int
+        ? rawId
+        : int.tryParse(rawId?.toString() ?? '');
+    if (parsedId == null) {
+      throw const FormatException('Ride record missing valid id');
+    }
     return RideRequestRecord(
-      id: int.tryParse(json['id'].toString()) ?? 0,
-      pickupLat: (json['pickup_lat'] as num?)?.toDouble() ?? 0.0,
-      pickupLng: (json['pickup_lng'] as num?)?.toDouble() ?? 0.0,
-      destLat: (json['dest_lat'] as num?)?.toDouble() ?? 0.0,
-      destLng: (json['dest_lng'] as num?)?.toDouble() ?? 0.0,
+      id: parsedId,
+      pickupLat: _parseCoord(json['pickup_lat']),
+      pickupLng: _parseCoord(json['pickup_lng']),
+      destLat: _parseCoord(json['dest_lat']),
+      destLng: _parseCoord(json['dest_lng']),
       status: (json['status'] ?? 'pending').toString(),
       h3Index: json['h3_index']?.toString(),
       clusterId: json['cluster_id'] == null ? null : int.tryParse(json['cluster_id'].toString()),

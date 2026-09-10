@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../providers/ride_provider.dart';
+import '../../services/api_client.dart';
 import '../../theme/app_theme.dart';
 
 class RatingScreen extends StatefulWidget {
@@ -13,6 +16,8 @@ class _RatingScreenState extends State<RatingScreen> {
   final Set<String> _selectedTags = {};
   final TextEditingController _commentController = TextEditingController();
   bool _submitted = false;
+  bool _isSubmitting = false;
+  String? _submitError;
 
   @override
   void dispose() {
@@ -20,10 +25,46 @@ class _RatingScreenState extends State<RatingScreen> {
     super.dispose();
   }
 
-  void _handleSubmit() async {
-    setState(() => _submitted = true);
-    await Future.delayed(const Duration(milliseconds: 1500));
-    if (mounted) Navigator.pushNamedAndRemoveUntil(context, '/home', (_) => false);
+  Future<void> _handleSubmit() async {
+    if (_stars == 0 || _isSubmitting) return;
+    setState(() {
+      _isSubmitting = true;
+      _submitError = null;
+    });
+    final rideId = context.read<RideProvider>().currentRideId;
+    try {
+      if (rideId != null) {
+        // Best-effort: backend may not have a rating endpoint yet.
+        // A 404 must not block the success UX.
+        try {
+          await ApiClient.instance.postJson(
+            '/rides/$rideId/rating',
+            body: {
+              'stars': _stars,
+              'tags': _selectedTags.toList(),
+              'comment': _commentController.text.trim(),
+            },
+          );
+        } on ApiException catch (e) {
+          if (e.statusCode != 404) rethrow;
+        }
+      }
+      if (!mounted) return;
+      setState(() => _submitted = true);
+      await Future.delayed(const Duration(milliseconds: 1500));
+      if (!mounted) return;
+      context.read<RideProvider>().reset();
+      Navigator.pushNamedAndRemoveUntil(context, '/home', (_) => false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _submitError = e is ApiException
+            ? e.message
+            : 'Could not submit rating. Please try again.';
+      });
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
   }
 
   @override
@@ -74,6 +115,10 @@ class _RatingScreenState extends State<RatingScreen> {
   }
 
   Widget _buildRatingForm() {
+    final vehicle = context.watch<RideProvider>().assignedVehicle;
+    final subtitle = vehicle != null
+        ? 'Rate your ride · Vehicle #${vehicle.id}'
+        : 'Rate your ride with your driver';
     return SafeArea(
       child: SingleChildScrollView(
         child: Padding(
@@ -81,7 +126,7 @@ class _RatingScreenState extends State<RatingScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Driver info header
+              // Driver info header (generic — backend has no driver identity).
               Padding(
                 padding: const EdgeInsets.only(top: 48, bottom: 24),
                 child: Column(
@@ -93,15 +138,10 @@ class _RatingScreenState extends State<RatingScreen> {
                         color: AppTheme.accentBlue,
                         shape: BoxShape.circle,
                       ),
-                      child: const Center(
-                        child: Text(
-                          'M',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
+                      alignment: Alignment.center,
+                      child: const Text(
+                        '🚗',
+                        style: TextStyle(fontSize: 28),
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -111,9 +151,10 @@ class _RatingScreenState extends State<RatingScreen> {
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      'Rate your experience with Marcus T.',
-                      style: TextStyle(fontSize: 13, color: AppTheme.textTertiary),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                          fontSize: 13, color: AppTheme.textTertiary),
                       textAlign: TextAlign.center,
                     ),
                   ],
@@ -125,7 +166,9 @@ class _RatingScreenState extends State<RatingScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [1, 2, 3, 4, 5].map((i) {
                   return GestureDetector(
-                    onTap: () => setState(() => _stars = i),
+                    onTap: _isSubmitting
+                        ? null
+                        : () => setState(() => _stars = i),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 6),
                       child: Text(
@@ -160,13 +203,15 @@ class _RatingScreenState extends State<RatingScreen> {
                   ].map((t) {
                     final selected = _selectedTags.contains(t);
                     return GestureDetector(
-                      onTap: () => setState(() {
-                        if (selected) {
-                          _selectedTags.remove(t);
-                        } else {
-                          _selectedTags.add(t);
-                        }
-                      }),
+                      onTap: _isSubmitting
+                          ? null
+                          : () => setState(() {
+                                if (selected) {
+                                  _selectedTags.remove(t);
+                                } else {
+                                  _selectedTags.add(t);
+                                }
+                              }),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 8),
@@ -196,9 +241,20 @@ class _RatingScreenState extends State<RatingScreen> {
                 TextField(
                   controller: _commentController,
                   maxLines: 3,
+                  enabled: !_isSubmitting,
                   decoration: const InputDecoration(
                     hintText: 'Add a comment (optional)',
                   ),
+                ),
+              ],
+
+              if (_submitError != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _submitError!,
+                  style: TextStyle(
+                      color: Colors.red.shade400, fontSize: 13),
+                  textAlign: TextAlign.center,
                 ),
               ],
 
@@ -206,11 +262,22 @@ class _RatingScreenState extends State<RatingScreen> {
 
               // Submit button
               AnimatedOpacity(
-                opacity: _stars == 0 ? 0.3 : 1.0,
+                opacity: _stars == 0 || _isSubmitting ? 0.5 : 1.0,
                 duration: const Duration(milliseconds: 200),
                 child: ElevatedButton(
-                  onPressed: _stars == 0 ? null : _handleSubmit,
-                  child: const Text('Submit rating'),
+                  onPressed: (_stars == 0 || _isSubmitting)
+                      ? null
+                      : _handleSubmit,
+                  child: _isSubmitting
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Text('Submit rating'),
                 ),
               ),
               const SizedBox(height: 32),

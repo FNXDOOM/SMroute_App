@@ -1,6 +1,8 @@
 # SmartRoute 🚗
 
-A full-featured ride-hailing app UI built with Flutter, inspired by Uber's dark design language. Implements the complete user journey from login through ride booking, rating, notifications, trip history, payment management, and profile — all with mock/static data, no backend required.
+A full-featured ride-hailing app UI built with Flutter, inspired by Uber's dark design language. Implements the complete user journey from login through ride booking, rating, notifications, trip history, payment management, and profile.
+
+**Backend status:** Auth, ride requests, ride vehicle assignment, live vehicle position, and notifications (including real-time push over WebSocket) are wired up to a real FastAPI backend (`finalyr_project` — SmartRouteAI), including one backend endpoint (`GET /rides/{id}/vehicle`) added specifically to support this app. Ride tiers and payments are still mock/static — see [`BACKEND_INTEGRATION_PLAN.md`](./BACKEND_INTEGRATION_PLAN.md) for the full breakdown of what's real, what's mock, what's broken, and what needs a backend change.
 
 ---
 
@@ -18,14 +20,15 @@ A full-featured ride-hailing app UI built with Flutter, inspired by Uber's dark 
 
 ## Features
 
-- **Authentication** — Login & Register with validation and loading states
-- **Home Screen** — Time-aware greeting, notification badge, promo banner, push permission banner, map illustration, destination search, recent places
-- **Ride Selection** — 4 ride tiers (SwiftX, SwiftXL, Lux Black, Moto) with price ranges and ETAs
-- **Ride Confirmation** — Animated stage transitions: Matching → Driver Found → Arriving, full driver card, safety features grid
+- **Authentication** — Login & Register against the real backend (JWT, session restore) ✅ live
+- **Home Screen** — Time-aware greeting, live notification badge, promo banner, push permission banner, map illustration, destination search, recent places
+- **Ride Selection** — 4 ride tiers (SwiftX, SwiftXL, Lux Black, Moto) with price ranges and ETAs — mock pricing (backend has no ride-tier/pricing endpoint, this is intentional, see plan doc)
+- **Ride Booking** — Posts a real ride request to the backend and loads real ride history ✅ live
+- **Ride Confirmation** — Animated stage transitions: Matching → Driver Found → Arriving; shows the real assigned vehicle's license plate, status, and live GPS position once the backend assigns one ✅ live (driver's personal name/rating is a generic placeholder — backend has no driver-identity field)
 - **Post-Ride Rating** — 5-star interactive rating, tag chips, optional comment, success state
-- **Inbox** — Filterable notification list (All / Rides / Promos / Payments), mark-all-read
-- **Trip History** — Past trips list with status badges, Scheduled empty state
-- **Payment** — Wallet balance, payment cards, add card bottom sheet, promo codes, transaction history
+- **Inbox** — Real backend notifications with live WebSocket push, filterable (All / Rides / Promos / Payments), mark-all-read ✅ live
+- **Trip History** — Real ride history from the backend, status badges, pull-to-refresh ✅ live
+- **Payment** — Wallet balance, payment cards, add card bottom sheet, promo codes, transaction history — backend has no payments router yet, falls back to mock data
 - **Profile** — User stats, contact info, settings menu with notifications toggle, sign-out confirmation
 - **Toast Overlay** — Auto-dismissing stacked toasts at top-center
 - **Bottom Navigation** — 4-tab nav with unread badge on Inbox tab
@@ -40,7 +43,10 @@ A full-featured ride-hailing app UI built with Flutter, inspired by Uber's dark 
 | State Management | `provider ^6.1.2` (ChangeNotifier) |
 | Navigation | Named routes with auth guard |
 | Maps | Custom `CustomPainter` illustration (no SDK needed) |
-| Data | Mock/static data — no backend or API calls |
+| Backend | FastAPI (`finalyr_project`) over HTTP + WebSocket, JWT auth |
+| Networking | `http` package via `ApiClient` (`lib/services/api_client.dart`) |
+| Local storage | `shared_preferences` for JWT persistence |
+| Data | Auth / rides / vehicle assignment / live tracking / notifications are live API + WebSocket calls; ride pricing and payments are still mock/static (see plan doc) |
 
 ---
 
@@ -57,6 +63,14 @@ Before running the app, make sure you have the following installed:
 3. **An Android emulator or physical device**
    - Android: Open Android Studio → Device Manager → Create a virtual device
    - Or connect a real Android/iOS device via USB with USB debugging enabled
+
+4. **The backend running** (for auth / rides / notifications to work)
+   - See `finalyr_project/README.md` for setup — `uvicorn backend.main:app --reload`, default at `http://localhost:8000`
+   - The app defaults to `http://127.0.0.1:8000`. Override with:
+     ```bash
+     flutter run --dart-define=SMARTROUTE_API_BASE_URL=http://<your-host>:8000
+     ```
+   - On an Android emulator, `127.0.0.1` refers to the emulator itself, not your host machine — use `http://10.0.2.2:8000` instead when running on the emulator.
 
 ---
 
@@ -153,15 +167,20 @@ lib/
 ├── models/
 │   ├── user.dart                # AppUser model
 │   ├── ride_option.dart         # RideOption model
+│   ├── assigned_vehicle.dart    # AssignedVehicle model — GET /rides/{id}/vehicle + /tracking/ws
 │   ├── trip.dart                # Trip model + TripStatus enum
 │   ├── notification_model.dart  # AppNotification + NotificationType enum
 │   ├── payment_card.dart        # PaymentCard model
 │   └── mock_data.dart           # All static mock data
 ├── providers/
-│   ├── auth_provider.dart       # Login / register / logout
-│   ├── ride_provider.dart       # Booking stage transitions
-│   ├── notification_provider.dart # Filter + mark-all-read
-│   └── payment_provider.dart   # Cards + wallet
+│   ├── auth_provider.dart       # Login / register / logout — real backend calls
+│   ├── ride_provider.dart       # Ride booking + history + vehicle assignment polling + live tracking — real backend calls
+│   ├── notification_provider.dart # List + mark-all-read + live WebSocket — real backend calls
+│   └── payment_provider.dart   # Cards + wallet — calls backend, falls back to mock (no payments router yet)
+├── services/
+│   ├── api_client.dart          # Shared HTTP client — base URL, JWT header, error handling
+│   ├── firebase_auth_service.dart
+│   └── location_service.dart
 ├── screens/
 │   ├── auth/
 │   │   ├── login_screen.dart
@@ -206,6 +225,15 @@ lib/
 | Border | `#2A2A2A` |
 | Card border radius | 20–24 dp |
 | Button border radius | 16 dp |
+
+---
+
+## Backend Integration Status
+
+See [`BACKEND_INTEGRATION_PLAN.md`](./BACKEND_INTEGRATION_PLAN.md) for the running list of:
+- bugs found and fixed in the real API integration
+- features that are still mock and why
+- features that were blocked on a backend change (F2/F3 — now resolved by adding `GET /rides/{id}/vehicle` to `finalyr_project`) and the exact diff applied
 
 ---
 
