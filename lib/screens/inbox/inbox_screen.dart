@@ -79,26 +79,20 @@ class _InboxScreenState extends State<InboxScreen> {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    ('all', 'All'),
-                    ('rides', 'Rides'),
-                    ('promos', 'Promos'),
-                    ('payments', 'Payments'),
+                    (NotifFilter.all, 'All'),
+                    (NotifFilter.rides, 'Rides'),
+                    (NotifFilter.promos, 'Promos'),
+                    (NotifFilter.payments, 'Payments'),
                   ].map((entry) {
-                    final filterKey = entry.$1;
+                    final filter = entry.$1;
                     final label = entry.$2;
                     return Consumer<NotificationProvider>(
                       builder: (context, provider, _) {
-                        final isActive =
-                            provider.activeFilter.name == filterKey;
+                        final isActive = provider.activeFilter == filter;
                         return GestureDetector(
-                          onTap: () {
-                            final filter = NotifFilter.values.firstWhere(
-                              (f) => f.name == filterKey,
-                            );
-                            context
-                                .read<NotificationProvider>()
-                                .setFilter(filter);
-                          },
+                          onTap: () => context
+                              .read<NotificationProvider>()
+                              .setFilter(filter),
                           child: Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 16, vertical: 8),

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/notification_provider.dart';
+import '../../providers/payment_provider.dart';
+import '../../providers/ride_provider.dart';
 import '../../theme/app_theme.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -50,9 +52,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   borderRadius: BorderRadius.circular(16),
                 ),
               ),
-              onPressed: () {
+              onPressed: () async {
                 Navigator.pop(context);
-                context.read<AuthProvider>().logout();
+                // Clear per-account state so the next login never sees
+                // the previous user's rides, notifications or wallet.
+                context.read<RideProvider>().clearForLogout();
+                context.read<NotificationProvider>().clear();
+                context.read<PaymentProvider>().clear();
+                await context.read<AuthProvider>().logout();
+                if (!context.mounted) return;
                 Navigator.pushNamedAndRemoveUntil(
                   context,
                   '/',
@@ -83,11 +91,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final user = context.read<AuthProvider>().currentUser;
     if (user == null) return;
 
-    final nameCtrl = TextEditingController(text: user.name);
-    final emailCtrl = TextEditingController(text: user.email);
-    final phoneCtrl = TextEditingController(text: user.phone);
-    final formKey = GlobalKey<FormState>();
-
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -95,113 +98,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (sheetCtx) => StatefulBuilder(
-        builder: (ctx, setSheetState) {
-          final auth = ctx.read<AuthProvider>();
-          return Padding(
-            padding: EdgeInsets.fromLTRB(
-              24, 24, 24,
-              24 + MediaQuery.of(ctx).viewInsets.bottom,
-            ),
-            child: Form(
-              key: formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Handle bar
-                  Center(
-                    child: Container(
-                      width: 40, height: 4,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF444444),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  const Text(
-                    'Edit Profile',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  _ProfileField(
-                    controller: nameCtrl,
-                    label: 'Full Name',
-                    icon: Icons.person_outline,
-                    validator: (v) => (v == null || v.trim().isEmpty) ? 'Name is required' : null,
-                  ),
-                  const SizedBox(height: 12),
-                  _ProfileField(
-                    controller: emailCtrl,
-                    label: 'Email',
-                    icon: Icons.email_outlined,
-                    keyboardType: TextInputType.emailAddress,
-                    validator: (v) {
-                      if (v == null || v.trim().isEmpty) return 'Email is required';
-                      if (!v.contains('@')) return 'Enter a valid email';
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  _ProfileField(
-                    controller: phoneCtrl,
-                    label: 'Phone',
-                    icon: Icons.phone_outlined,
-                    keyboardType: TextInputType.phone,
-                  ),
-                  const SizedBox(height: 24),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.accentBlue,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size(double.infinity, 52),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                    ),
-                    onPressed: auth.isLoading
-                        ? null
-                        : () async {
-                            if (!formKey.currentState!.validate()) return;
-                            final error = await auth.updateProfile(
-                              name: nameCtrl.text,
-                              email: emailCtrl.text,
-                              phone: phoneCtrl.text,
-                            );
-                            if (!ctx.mounted) return;
-                            Navigator.pop(ctx);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  error ?? 'Profile updated!',
-                                ),
-                                backgroundColor: error == null ? Colors.green.shade700 : Colors.red.shade700,
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
-                          },
-                    child: auth.isLoading
-                        ? const SizedBox(
-                            width: 20, height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                          )
-                        : const Text('Save changes', style: TextStyle(fontWeight: FontWeight.bold)),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    child: const Text(
-                      'Cancel',
-                      style: TextStyle(fontSize: 14, color: Color(0xFF888888)),
-                    ),
-                  ),
-                ],
-              ),
+      builder: (sheetCtx) => _EditProfileSheet(
+        initialName: user.name,
+        initialEmail: user.email,
+        initialPhone: user.phone,
+        onSaved: (error) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(error ?? 'Profile updated!'),
+              backgroundColor: error == null
+                  ? Colors.green.shade700
+                  : Colors.red.shade700,
+              behavior: SnackBarBehavior.floating,
             ),
           );
         },
@@ -223,8 +131,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
 
-    // Ignore NotificationProvider — imported for future toggle wiring
-    context.read<NotificationProvider>();
+    final tripCount = context.select<RideProvider, int>(
+      (r) => r.myRides.length,
+    );
+    final memberSince = user.createdAt == null
+        ? '—'
+        : "'${(user.createdAt!.year % 100).toString().padLeft(2, '0')}";
 
     return Scaffold(
       backgroundColor: AppTheme.scaffoldBg,
@@ -265,7 +177,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                           alignment: Alignment.center,
                           child: Text(
-                            user.firstName[0],
+                            user.avatarLetter,
                             style: const TextStyle(
                               fontSize: 22,
                               fontWeight: FontWeight.bold,
@@ -343,14 +255,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
               ),
 
-              // ── 3. Stats grid ─────────────────────────────────────────────
+              // ── 3. Stats grid (real trip count; rating/since from
+              // backend where available — no fabricated totals) ─────────────
               Row(
                 children: [
-                  Expanded(child: _StatCard(label: 'Trips', value: '47')),
+                  Expanded(
+                      child: _StatCard(
+                          label: 'Trips', value: '$tripCount')),
                   const SizedBox(width: 8),
-                  Expanded(child: _StatCard(label: 'Rating', value: '4.96')),
+                  const Expanded(
+                      child: _StatCard(label: 'Rating', value: '—')),
                   const SizedBox(width: 8),
-                  Expanded(child: _StatCard(label: 'Since', value: "'23")),
+                  Expanded(
+                      child:
+                          _StatCard(label: 'Since', value: memberSince)),
                 ],
               ),
 
@@ -442,7 +360,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       subtitle: 'Ride alerts, promos',
                       trailing: Switch(
                         value: _notifEnabled,
-                        onChanged: (v) => setState(() => _notifEnabled = v),
+                        onChanged: (v) {
+                          setState(() => _notifEnabled = v);
+                          final notifs =
+                              context.read<NotificationProvider>();
+                          if (v) {
+                            notifs.reconnectIfTokenChanged();
+                          } else {
+                            notifs.clear();
+                          }
+                        },
                         activeThumbColor: AppTheme.accentBlue,
                       ),
                     ),
@@ -450,22 +377,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       emoji: '🔒',
                       label: 'Privacy & security',
                       subtitle: 'Data, permissions',
+                      onTap: () => _comingSoon(context, 'Privacy & security'),
                     ),
                     _MenuTile(
                       emoji: '🛟',
                       label: 'Help & support',
                       subtitle: 'FAQs, contact us',
+                      onTap: () => _comingSoon(context, 'Help & support'),
                     ),
                     _MenuTile(
                       emoji: '⭐',
                       label: 'Rate the app',
                       subtitle: 'Share your feedback',
+                      onTap: () => _comingSoon(context, 'App rating'),
                     ),
                     _MenuTile(
                       emoji: '⚙️',
                       label: 'Settings',
                       subtitle: 'Language, theme',
                       showDivider: false,
+                      onTap: () => _comingSoon(context, 'Settings'),
                     ),
                   ],
                 ),
@@ -615,6 +546,168 @@ class _MenuTile extends StatelessWidget {
             endIndent: 16,
           ),
       ],
+    );
+  }
+}
+
+void _comingSoon(BuildContext context, String feature) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('$feature — coming soon'),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 2),
+    ),
+  );
+}
+
+// ── Edit profile sheet (disposes its own controllers, listens to loading) ──
+
+class _EditProfileSheet extends StatefulWidget {
+  final String initialName;
+  final String initialEmail;
+  final String initialPhone;
+  final void Function(String? error) onSaved;
+
+  const _EditProfileSheet({
+    required this.initialName,
+    required this.initialEmail,
+    required this.initialPhone,
+    required this.onSaved,
+  });
+
+  @override
+  State<_EditProfileSheet> createState() => _EditProfileSheetState();
+}
+
+class _EditProfileSheetState extends State<_EditProfileSheet> {
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _emailCtrl;
+  late final TextEditingController _phoneCtrl;
+  final _formKey = GlobalKey<FormState>();
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.initialName);
+    _emailCtrl = TextEditingController(text: widget.initialEmail);
+    _phoneCtrl = TextEditingController(text: widget.initialPhone);
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _emailCtrl.dispose();
+    _phoneCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+    final auth = context.read<AuthProvider>();
+    final error = await auth.updateProfile(
+      name: _nameCtrl.text,
+      email: _emailCtrl.text,
+      phone: _phoneCtrl.text,
+    );
+    if (!mounted) return;
+    Navigator.pop(context);
+    widget.onSaved(error);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isLoading = context.watch<AuthProvider>().isLoading;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        24, 24, 24,
+        24 + MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF444444),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Edit Profile',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 20),
+            _ProfileField(
+              controller: _nameCtrl,
+              label: 'Full Name',
+              icon: Icons.person_outline,
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Name is required' : null,
+            ),
+            const SizedBox(height: 12),
+            _ProfileField(
+              controller: _emailCtrl,
+              label: 'Email',
+              icon: Icons.email_outlined,
+              keyboardType: TextInputType.emailAddress,
+              validator: (v) {
+                if (v == null || v.trim().isEmpty) return 'Email is required';
+                if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                    .hasMatch(v.trim())) {
+                  return 'Enter a valid email';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 12),
+            _ProfileField(
+              controller: _phoneCtrl,
+              label: 'Phone',
+              icon: Icons.phone_outlined,
+              keyboardType: TextInputType.phone,
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.accentBlue,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 52),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              onPressed: isLoading ? null : _save,
+              child: isLoading
+                  ? const SizedBox(
+                      width: 20, height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Save changes',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed:
+                  isLoading ? null : () => Navigator.pop(context),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(fontSize: 14, color: Color(0xFF888888)),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

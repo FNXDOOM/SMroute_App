@@ -3,9 +3,9 @@ class PaymentCard {
   final String brand;
   final String last4;
   final String expiry;
-  bool isPrimary;
+  final bool isPrimary;
 
-  PaymentCard({
+  const PaymentCard({
     required this.id,
     required this.brand,
     required this.last4,
@@ -13,9 +13,23 @@ class PaymentCard {
     required this.isPrimary,
   });
 
-  factory PaymentCard.fromJson(Map<String, dynamic> json) {
+  PaymentCard copyWith({bool? isPrimary}) {
     return PaymentCard(
-      id: json['id'].toString(),
+      id: id,
+      brand: brand,
+      last4: last4,
+      expiry: expiry,
+      isPrimary: isPrimary ?? this.isPrimary,
+    );
+  }
+
+  factory PaymentCard.fromJson(Map<String, dynamic> json) {
+    final rawId = json['id']?.toString() ?? '';
+    if (rawId.isEmpty || rawId == 'null') {
+      throw const FormatException('Payment card missing valid id');
+    }
+    return PaymentCard(
+      id: rawId,
       brand: (json['brand'] ?? 'Card').toString(),
       last4: (json['last4'] ?? '0000').toString(),
       expiry: (json['expiry'] ?? '').toString(),

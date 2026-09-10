@@ -15,7 +15,14 @@ class AppUser {
     this.createdAt,
   });
 
-  String get firstName => name.trim().split(' ').first;
+  String get firstName {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return 'Rider';
+    return trimmed.split(RegExp(r'\s+')).first;
+  }
+
+  /// Safe single-letter avatar fallback — never throws on empty names.
+  String get avatarLetter => firstName[0].toUpperCase();
 
   factory AppUser.fromJson(
     Map<String, dynamic> json, {

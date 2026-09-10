@@ -25,6 +25,8 @@ void main() {
 class SmartRouteApp extends StatelessWidget {
   const SmartRouteApp({super.key});
 
+  static const _publicRoutes = {'/', '/login', '/register'};
+
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
@@ -48,31 +50,51 @@ class SmartRouteApp extends StatelessWidget {
             theme: AppTheme.dark,
             debugShowCheckedModeBanner: false,
             initialRoute: '/',
-            routes: {
-              '/': (_) => const _BootstrapScreen(),
-              '/login': (_) => const LoginScreen(),
-              '/register': (_) => const RegisterScreen(),
-              '/home': (_) => const HomeScreen(),
-              '/ride-select': (_) => const RideSelectScreen(),
-              '/ride-confirm': (_) => const RideConfirmScreen(),
-              '/rating': (_) => const RatingScreen(),
-              '/inbox': (_) => const InboxScreen(),
-              '/trips': (_) => const TripsScreen(),
-              '/payment': (_) => const PaymentScreen(),
-              '/profile': (_) => const ProfileScreen(),
-            },
+            // NOTE: auth guard lives in onGenerateRoute. Do NOT also use
+            // `routes:` — entries there take precedence and would bypass
+            // the guard (previous bug: guard never fired).
             onGenerateRoute: (settings) {
-              final publicRoutes = {'/', '/login', '/register'};
               final auth = Provider.of<AuthProvider>(context, listen: false);
+              final name = settings.name ?? '/';
               if (!auth.isAuthenticated &&
                   !auth.isBootstrapping &&
-                  !publicRoutes.contains(settings.name)) {
+                  !_publicRoutes.contains(name)) {
                 return MaterialPageRoute(
                   builder: (_) => const LoginScreen(),
                   settings: const RouteSettings(name: '/login'),
                 );
               }
-              return null;
+              return MaterialPageRoute(
+                settings: settings,
+                builder: (_) {
+                  switch (name) {
+                    case '/':
+                      return const _BootstrapScreen();
+                    case '/login':
+                      return const LoginScreen();
+                    case '/register':
+                      return const RegisterScreen();
+                    case '/home':
+                      return const HomeScreen();
+                    case '/ride-select':
+                      return const RideSelectScreen();
+                    case '/ride-confirm':
+                      return const RideConfirmScreen();
+                    case '/rating':
+                      return const RatingScreen();
+                    case '/inbox':
+                      return const InboxScreen();
+                    case '/trips':
+                      return const TripsScreen();
+                    case '/payment':
+                      return const PaymentScreen();
+                    case '/profile':
+                      return const ProfileScreen();
+                    default:
+                      return const _BootstrapScreen();
+                  }
+                },
+              );
             },
           );
         },
@@ -82,8 +104,27 @@ class SmartRouteApp extends StatelessWidget {
 }
 
 /// Waits for the stored session to be validated, then routes accordingly.
-class _BootstrapScreen extends StatelessWidget {
+class _BootstrapScreen extends StatefulWidget {
   const _BootstrapScreen();
+
+  @override
+  State<_BootstrapScreen> createState() => _BootstrapScreenState();
+}
+
+class _BootstrapScreenState extends State<_BootstrapScreen> {
+  bool _navigated = false;
+
+  void _routeAfterBootstrap(bool isAuthenticated) {
+    if (_navigated || !mounted) return;
+    _navigated = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.pushReplacementNamed(
+        context,
+        isAuthenticated ? '/home' : '/login',
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -105,13 +146,8 @@ class _BootstrapScreen extends StatelessWidget {
       );
     }
 
-    // Session restore complete — navigate without keeping this in the stack.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      Navigator.pushReplacementNamed(
-        context,
-        auth.isAuthenticated ? '/home' : '/login',
-      );
-    });
+    // Session restore complete — navigate once, without keeping this in stack.
+    _routeAfterBootstrap(auth.isAuthenticated);
 
     // Show nothing while the post-frame callback fires.
     return const Scaffold(backgroundColor: Colors.black);

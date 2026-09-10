@@ -78,9 +78,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     // Read auth once — only rebuilds if user itself changes (login/logout).
     final user = context.select<AuthProvider, String>(
-      (a) => a.currentUser?.name ?? 'Rider',
+      (a) => a.currentUser?.firstName ?? 'Rider',
     );
-    final firstName = user.split(' ').first;
+    final firstName = user.isEmpty ? 'Rider' : user;
 
     // Read only unreadCount — rebuilds only when badge number changes.
     final notifCount = context.select<NotificationProvider, int>(
@@ -100,9 +100,17 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
 
             // ── 2. Promo banner ─────────────────────────────────────────
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: PromoBanner(),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: PromoBanner(
+                onClaim: () => ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Code SWIFT20 copied — apply it at payment'),
+                    behavior: SnackBarBehavior.floating,
+                    duration: Duration(seconds: 2),
+                  ),
+                ),
+              ),
             ),
 
             // ── 3. Push notification permission banner ───────────────────
@@ -342,7 +350,7 @@ class _TopBar extends StatelessWidget {
               ),
               alignment: Alignment.center,
               child: Text(
-                firstName[0].toUpperCase(),
+                firstName.isEmpty ? 'R' : firstName[0].toUpperCase(),
                 style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,

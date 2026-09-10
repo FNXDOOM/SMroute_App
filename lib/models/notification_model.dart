@@ -20,12 +20,16 @@ class AppNotification {
   });
 
   factory AppNotification.fromJson(Map<String, dynamic> json) {
+    final rawId = json['id']?.toString() ?? '';
+    if (rawId.isEmpty || rawId == 'null') {
+      throw const FormatException('Notification missing valid id');
+    }
     final type = _typeFromBackend((json['notification_type'] ?? '').toString());
     final createdAt = json['created_at'] == null
         ? null
         : DateTime.tryParse(json['created_at'].toString());
     return AppNotification(
-      id: json['id'].toString(),
+      id: rawId,
       type: type,
       title: (json['title'] ?? 'Notification').toString(),
       body: (json['message'] ?? '').toString(),

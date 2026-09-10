@@ -5,6 +5,9 @@ import 'package:flutter/foundation.dart';
 import '../models/user.dart';
 import '../services/api_client.dart';
 
+/// Email format used for lightweight client-side validation.
+final RegExp _emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+
 class AuthProvider extends ChangeNotifier {
   final ApiClient _api = ApiClient.instance;
 
@@ -39,13 +42,22 @@ class AuthProvider extends ChangeNotifier {
     String phoneFallback = '',
   }) async {
     final token = payload['access_token']?.toString();
-    if (token != null && token.isNotEmpty) {
-      await _api.setToken(token);
+    if (token == null || token.isEmpty) {
+      throw const FormatException('Missing access_token in response');
     }
+    await _api.setToken(token);
 
     final userJson = payload['user'];
-    if (userJson is Map<String, dynamic>) {
-      _currentUser = AppUser.fromJson(userJson, phoneFallback: phoneFallback);
+    if (userJson is! Map<String, dynamic>) {
+      // Token is valid but user payload is malformed — don't leave a
+      // half-logged-in state (token saved, no user, no error).
+      await _api.clearToken();
+      throw const FormatException('Missing user in response');
+    }
+    _currentUser = AppUser.fromJson(userJson, phoneFallback: phoneFallback);
+    // Preserve a locally-known phone when the backend omits it.
+    if (_currentUser!.phone.isEmpty && phoneFallback.isNotEmpty) {
+      _currentUser = _currentUser!.copyWithPhone(phoneFallback);
     }
   }
 
@@ -62,9 +74,29 @@ class AuthProvider extends ChangeNotifier {
       }
 
       final userJson = await _api.getJson('/auth/me');
-      _currentUser = AppUser.fromJson(userJson as Map<String, dynamic>);
+      if (userJson is! Map<String, dynamic>) {
+        throw const FormatException('Invalid /auth/me response');
+      }
+      _currentUser = AppUser.fromJson(userJson);
+    } on ApiException catch (e) {
+      // Only wipe the stored token when the backend actively rejects it.
+      // Transient network failures (status 0) or 5xx must keep the session
+      // so the next launch can retry instead of forcing a re-login.
+      if (e.isUnauthorized) {
+        try {
+          await _api.clearToken();
+        } catch (_) {
+          // Clearing prefs must never crash bootstrap.
+        }
+        _currentUser = null;
+      }
+      // On network/server errors _currentUser stays null for this launch,
+      // but the token is preserved for a later retry.
+      if (_currentUser == null && !e.isUnauthorized) {
+        _error = e.message;
+      }
     } catch (_) {
-      await _api.clearToken();
+      // Malformed payload etc. — keep token, surface nothing fatal here.
       _currentUser = null;
     } finally {
       _isBootstrapping = false;
@@ -72,9 +104,20 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> login(String email, String password) async {
+  String? _validateLogin(String email, String password) {
     if (_hasEmptyFields([email, password])) {
-      _error = 'Please fill in all fields.';
+      return 'Please fill in all fields.';
+    }
+    if (!_emailPattern.hasMatch(email.trim())) {
+      return 'Enter a valid email address.';
+    }
+    return null;
+  }
+
+  Future<void> login(String email, String password) async {
+    final validationError = _validateLogin(email, password);
+    if (validationError != null) {
+      _error = validationError;
       notifyListeners();
       return;
     }
@@ -92,7 +135,12 @@ class AuthProvider extends ChangeNotifier {
           'password': password,
         },
       );
-      await _applyTokenResponse(response as Map<String, dynamic>);
+      if (response is! Map<String, dynamic>) {
+        throw const FormatException('Invalid login response');
+      }
+      await _applyTokenResponse(response);
+    } on FormatException {
+      _error = 'Unexpected server response. Please try again.';
     } catch (error) {
       _error = _messageForException(error);
     } finally {
@@ -101,14 +149,33 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  String? _validateRegister(
+    String name,
+    String email,
+    String phone,
+    String password,
+  ) {
+    if (_hasEmptyFields([name, email, phone, password])) {
+      return 'Please fill in all fields.';
+    }
+    if (!_emailPattern.hasMatch(email.trim())) {
+      return 'Enter a valid email address.';
+    }
+    if (password.length < 6) {
+      return 'Password must be at least 6 characters.';
+    }
+    return null;
+  }
+
   Future<void> register(
     String name,
     String email,
     String phone,
     String password,
   ) async {
-    if (_hasEmptyFields([name, email, phone, password])) {
-      _error = 'Please fill in all fields.';
+    final validationError = _validateRegister(name, email, phone, password);
+    if (validationError != null) {
+      _error = validationError;
       notifyListeners();
       return;
     }
@@ -124,6 +191,7 @@ class AuthProvider extends ChangeNotifier {
         body: {
           'name': name.trim(),
           'email': email.trim(),
+          'phone': phone.trim(),
           'password': password,
           'role': 'passenger',
         },
@@ -137,16 +205,15 @@ class AuthProvider extends ChangeNotifier {
           'password': password,
         },
       );
+      if (loginResponse is! Map<String, dynamic>) {
+        throw const FormatException('Invalid login response');
+      }
       await _applyTokenResponse(
-        loginResponse as Map<String, dynamic>,
+        loginResponse,
         phoneFallback: phone.trim(),
       );
-      _currentUser = _currentUser?.copyWithPhone(phone.trim()) ??
-          AppUser(
-            name: name.trim(),
-            email: email.trim(),
-            phone: phone.trim(),
-          );
+    } on FormatException {
+      _error = 'Unexpected server response. Please try again.';
     } catch (error) {
       _error = _messageForException(error);
     } finally {
@@ -161,6 +228,9 @@ class AuthProvider extends ChangeNotifier {
     required String email,
     required String phone,
   }) async {
+    if (name.trim().isEmpty) return 'Name is required.';
+    if (!_emailPattern.hasMatch(email.trim())) return 'Enter a valid email.';
+
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -174,8 +244,14 @@ class AuthProvider extends ChangeNotifier {
           'phone': phone.trim(),
         },
       );
-      _currentUser = AppUser.fromJson(response as Map<String, dynamic>);
+      if (response is! Map<String, dynamic>) {
+        throw const FormatException('Invalid profile response');
+      }
+      _currentUser = AppUser.fromJson(response);
       return null; // success
+    } on FormatException {
+      _error = 'Unexpected server response. Please try again.';
+      return _error;
     } catch (error) {
       _error = _messageForException(error);
       return _error;
@@ -187,7 +263,11 @@ class AuthProvider extends ChangeNotifier {
 
   /// Clears the current user session.
   Future<void> logout() async {
-    await _api.clearToken();
+    try {
+      await _api.clearToken();
+    } catch (_) {
+      // Prefs failures must not block logout.
+    }
     _currentUser = null;
     _error = null;
     notifyListeners();
