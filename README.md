@@ -2,7 +2,7 @@
 
 A full-featured ride-hailing app UI built with Flutter, inspired by Uber's dark design language. Implements the complete user journey from login through ride booking, rating, notifications, trip history, payment management, and profile.
 
-**Backend status:** Auth, ride requests, ride vehicle assignment, live vehicle position, and notifications (including real-time push over WebSocket) are wired up to a real FastAPI backend (`finalyr_project` — SmartRouteAI), including one backend endpoint (`GET /rides/{id}/vehicle`) added specifically to support this app. Ride tiers and payments are still mock/static — see [`BACKEND_INTEGRATION_PLAN.md`](./BACKEND_INTEGRATION_PLAN.md) for the full breakdown of what's real, what's mock, what's broken, and what needs a backend change.
+**Backend status:** Auth, ride requests, ride vehicle assignment, live vehicle position, ratings (best-effort), payments, and notifications (including real-time push over WebSocket) are wired up to a real FastAPI backend, including the `GET /rides/{id}/vehicle` endpoint that backs vehicle assignment. Only ride-tier pricing/ETAs are still mock/static (the backend has no ride-tier/pricing endpoint — intentional). No mock fallbacks: if the backend is unreachable the app shows empty states + errors, never fake data.
 
 ---
 
@@ -24,13 +24,12 @@ A full-featured ride-hailing app UI built with Flutter, inspired by Uber's dark 
 - **Home Screen** — Time-aware greeting, live notification badge, promo banner, push permission banner, map illustration, destination search, recent places
 - **Ride Selection** — 4 ride tiers (SwiftX, SwiftXL, Lux Black, Moto) with price ranges and ETAs — mock pricing (backend has no ride-tier/pricing endpoint, this is intentional, see plan doc)
 - **Ride Booking** — Posts a real ride request to the backend and loads real ride history ✅ live
-- **Ride Confirmation** — Animated stage transitions: Matching → Driver Found → Arriving; shows the real assigned vehicle's license plate, status, and live GPS position once the backend assigns one ✅ live (driver's personal name/rating is a generic placeholder — backend has no driver-identity field)
-- **Post-Ride Rating** — 5-star interactive rating, tag chips, optional comment, success state
-- **Inbox** — Real backend notifications with live WebSocket push, filterable (All / Rides / Promos / Payments), mark-all-read ✅ live
+- **Ride Confirmation** — Animated stage transitions: Matching → Driver Found → Arriving, plus Completed / Cancelled terminal states; shows the real assigned vehicle's license plate, status, and live GPS position once the backend assigns one ✅ live (driver's personal name/rating is a generic placeholder — backend has no driver-identity field)
+- **Post-Ride Rating** — 5-star interactive rating, tag chips, optional comment, best-effort `POST /rides/{id}/rating`, success state
+- **Inbox** — Real backend notifications with live WebSocket push (auto-reconnect), filterable (All / Rides / Promos / Payments), mark-all-read ✅ live
 - **Trip History** — Real ride history from the backend, status badges, pull-to-refresh ✅ live
-- **Payment** — Wallet balance, payment cards, add card bottom sheet, promo codes, transaction history — backend has no payments router yet, falls back to mock data
-- **Profile** — User stats, contact info, settings menu with notifications toggle, sign-out confirmation
-- **Toast Overlay** — Auto-dismissing stacked toasts at top-center
+- **Payment** — Real wallet balance, payment cards (add with Luhn/expiry/CVV validation, set primary), and transaction history from the backend ✅ live
+- **Profile** — Real trip count, contact info, edit-profile sheet with validation, notifications toggle wired to realtime, per-account state cleared on sign-out
 - **Bottom Navigation** — 4-tab nav with unread badge on Inbox tab
 
 ---
@@ -46,7 +45,7 @@ A full-featured ride-hailing app UI built with Flutter, inspired by Uber's dark 
 | Backend | FastAPI (`finalyr_project`) over HTTP + WebSocket, JWT auth |
 | Networking | `http` package via `ApiClient` (`lib/services/api_client.dart`) |
 | Local storage | `shared_preferences` for JWT persistence |
-| Data | Auth / rides / vehicle assignment / live tracking / notifications are live API + WebSocket calls; ride pricing and payments are still mock/static (see plan doc) |
+| Data | Auth / rides / vehicle assignment / live tracking / notifications / ratings / payments are live API + WebSocket calls; only ride-tier pricing/ETAs are still mock/static |
 
 ---
 
@@ -122,7 +121,7 @@ flutter run -d <device-id>
 
 ### Step 5 — Try the app
 
-1. On the **Login** screen, enter any email and password (e.g. `test@test.com` / `password`) and tap **Continue**
+1. On the **Login** screen, sign in with a real backend account (or **Create account** first) and tap **Continue** — the backend must be running (step 4 of Prerequisites)
 2. You land on **Home** — tap a recent place or type a destination and tap **Find a ride →**
 3. Pick a ride tier on the **Ride Select** screen and tap **Book**
 4. Watch the **Ride Confirm** screen animate through matching → found → arriving stages automatically
@@ -167,20 +166,20 @@ lib/
 ├── models/
 │   ├── user.dart                # AppUser model
 │   ├── ride_option.dart         # RideOption model
+│   ├── ride_request_record.dart # RideRequestRecord — GET /rides/my-rides
 │   ├── assigned_vehicle.dart    # AssignedVehicle model — GET /rides/{id}/vehicle + /tracking/ws
-│   ├── trip.dart                # Trip model + TripStatus enum
 │   ├── notification_model.dart  # AppNotification + NotificationType enum
 │   ├── payment_card.dart        # PaymentCard model
-│   └── mock_data.dart           # All static mock data
+│   ├── payment_transaction.dart # PaymentTransaction model
+│   └── mock_data.dart           # Ride-tier catalogue only (no mock user/trip/payment data)
 ├── providers/
-│   ├── auth_provider.dart       # Login / register / logout — real backend calls
+│   ├── auth_provider.dart       # Login / register / logout / session restore — real backend calls
 │   ├── ride_provider.dart       # Ride booking + history + vehicle assignment polling + live tracking — real backend calls
-│   ├── notification_provider.dart # List + mark-all-read + live WebSocket — real backend calls
-│   └── payment_provider.dart   # Cards + wallet — calls backend, falls back to mock (no payments router yet)
+│   ├── notification_provider.dart # List + mark-all-read + live WebSocket with reconnect — real backend calls
+│   └── payment_provider.dart   # Wallet + cards + transactions — real backend calls, no mock fallback
 ├── services/
-│   ├── api_client.dart          # Shared HTTP client — base URL, JWT header, error handling
-│   ├── firebase_auth_service.dart
-│   └── location_service.dart
+│   ├── api_client.dart          # Shared HTTP client — base URL, JWT header, timeouts, error handling
+│   └── location_service.dart    # Pickup + destination geocoding (SF demo points; placeholder until real geocoding)
 ├── screens/
 │   ├── auth/
 │   │   ├── login_screen.dart
@@ -202,13 +201,20 @@ lib/
 └── widgets/
     ├── bottom_nav_bar.dart
     ├── map_illustration.dart
-    ├── toast_overlay.dart
     ├── promo_banner.dart
     ├── ride_option_card.dart
-    ├── trip_card.dart
     ├── notification_tile.dart
     ├── payment_card_tile.dart
     └── safety_features_grid.dart
+```
+
+---
+
+## Verify
+
+```bash
+flutter analyze   # must report "No issues found!"
+flutter test      # widget + provider unit tests
 ```
 
 ---
@@ -230,10 +236,12 @@ lib/
 
 ## Backend Integration Status
 
-See [`BACKEND_INTEGRATION_PLAN.md`](./BACKEND_INTEGRATION_PLAN.md) for the running list of:
-- bugs found and fixed in the real API integration
-- features that are still mock and why
-- features that were blocked on a backend change (F2/F3 — now resolved by adding `GET /rides/{id}/vehicle` to `finalyr_project`) and the exact diff applied
+What's live vs mock (backend = `finalyr_project` FastAPI app):
+
+- ✅ Live: auth (JWT + session restore), ride requests + history, vehicle assignment polling (`GET /rides/{id}/vehicle`), live GPS via `/tracking/ws`, notifications + realtime push, ratings (best-effort POST), wallet / cards / transactions.
+- 🧪 Mock (intentional): ride-tier names, price ranges, and ETAs in `lib/models/mock_data.dart` — the backend has no pricing endpoint.
+- 🚫 Never mocked: no fake wallet balance, cards, trips, or notifications — backend errors surface as empty states + error messages.
+- Reliability notes: 15s request timeouts, session kept on transient network failures (cleared only on 401/403), per-account state cleared on sign-out, notification socket auto-reconnects (3 attempts, backoff).
 
 ---
 
