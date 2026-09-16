@@ -8,7 +8,8 @@ import '../models/assigned_vehicle.dart';
 import '../models/ride_option.dart';
 import '../models/ride_request_record.dart';
 import '../services/api_client.dart';
-import '../services/location_service.dart';
+import '../services/geocoding_service.dart';
+import '../services/routing_service.dart';
 
 enum BookingStage { matching, found, arriving, completed, cancelled }
 
@@ -16,7 +17,25 @@ class RideProvider extends ChangeNotifier {
   final ApiClient _api = ApiClient.instance;
 
   String? _destination;
+  GeoPoint? _destinationPoint;
+  bool _isResolvingDestination = false;
   RideOption? _selectedOption;
+
+  // ── Pickup (site: pickup field + GPS + "Choose on map") ──────────────────
+  // The website never books from a fabricated pickup: the user either picks a
+  // suggestion, uses GPS, or taps the map. Until then we fall back to the
+  // backend's Bengaluru service point, and the UI says so.
+  GeoPoint? _pickupPoint;
+  String _pickupLabel = 'Current location';
+  bool _pickupConfirmed = false;
+
+  /// Site's "Use live traffic for route and ETA" switch.
+  bool _trafficEnabled = false;
+
+  /// Road route for the currently selected pickup → destination pair.
+  RouteEstimate? _routeEstimate;
+  bool _isLoadingRoute = false;
+  String _routeKey = '';
   BookingStage _stage = BookingStage.matching;
   bool _isBooking = false;
   bool _isLoadingRides = false;
@@ -33,6 +52,17 @@ class RideProvider extends ChangeNotifier {
   bool _isFetchingVehicle = false;
   WebSocketChannel? _trackingChannel;
   StreamSubscription? _trackingSubscription;
+  int _trackingReconnectAttempts = 0;
+  Timer? _trackingReconnectTimer;
+  bool _disposed = false;
+
+  // Status polling fallback (Bug fix): the backend only pushes ride-status
+  // changes as WebSocket notifications; if that socket is down, the stage
+  // machine would freeze on "Finding your driver". This timer re-reads the
+  // authoritative status from GET /rides/{id} while a ride is active.
+  Timer? _statusPollTimer;
+  bool _isPollingStatus = false;
+  String? _lastPolledBackendStatus;
 
   // Backend has no automatic job that actually runs route optimization /
   // vehicle assignment for a ride — only a timer-driven status simulation.
@@ -40,8 +70,35 @@ class RideProvider extends ChangeNotifier {
   // attempts (~2 min at 4s/poll) rather than polling forever.
   static const int _maxVehiclePollAttempts = 30;
 
+  // Bounded reconnect for the tracking socket (no connection storms).
+  static const int _maxTrackingReconnectAttempts = 5;
+
+  // Status polling cadence while a ride is non-terminal.
+  static const Duration _statusPollInterval = Duration(seconds: 5);
+
   String? get destination => _destination;
+  GeoPoint? get destinationPoint => _destinationPoint;
+  bool get isResolvingDestination => _isResolvingDestination;
   RideOption? get selectedOption => _selectedOption;
+  GeoPoint? get pickupPoint => _pickupPoint;
+  String get pickupLabel => _pickupLabel;
+  bool get pickupConfirmed => _pickupConfirmed;
+  bool get trafficEnabled => _trafficEnabled;
+  RouteEstimate? get routeEstimate => _routeEstimate;
+  bool get isLoadingRoute => _isLoadingRoute;
+
+  /// The ride just booked, as the backend reports it (authoritative).
+  RideRequestRecord? get activeRideRecord {
+    final id = _currentRideId;
+    if (id == null) return null;
+    for (final ride in _myRides) {
+      if (ride.id == id) return ride;
+    }
+    return null;
+  }
+
+  /// True while a booked ride has not reached a terminal state.
+  bool get hasActiveRide => _currentRideId != null && !isRideTerminal;
   BookingStage get stage => _stage;
   bool get isBooking => _isBooking;
   bool get isLoadingRides => _isLoadingRides;
@@ -56,9 +113,110 @@ class RideProvider extends ChangeNotifier {
       _stage == BookingStage.completed || _stage == BookingStage.cancelled;
 
   void setDestination(String d) {
+    // Text only — coordinates are resolved by the backend geocoder in
+    // confirmBooking() (the backend rejects non-India coordinates with 422).
+    if (d != _destination) _destinationPoint = null;
     _destination = d;
     _error = null;
+    _resetRoute();
     notifyListeners();
+  }
+
+  /// Adopt a geocoder suggestion for the destination (site `chooseSuggestion`).
+  void setDestinationPoint(PlaceSuggestion place) {
+    _destination = place.label;
+    _destinationPoint = GeoPoint(place.lat, place.lng);
+    _error = null;
+    refreshRoute();
+    notifyListeners();
+  }
+
+  /// Adopt a pickup: GPS fix, geocoder suggestion, or a point tapped on the
+  /// map (already snapped to a road by the backend).
+  void setPickup({
+    required GeoPoint point,
+    required String label,
+  }) {
+    _pickupPoint = point;
+    _pickupLabel = label.trim().isEmpty ? 'Current location' : label.trim();
+    _pickupConfirmed = true;
+    _error = null;
+    refreshRoute();
+    notifyListeners();
+  }
+
+  /// Clears the pickup back to the backend's service default (site: typing in
+  /// the pickup field invalidates the confirmed point).
+  void clearPickup() {
+    _pickupPoint = null;
+    _pickupLabel = 'Current location';
+    _pickupConfirmed = false;
+    _resetRoute();
+    notifyListeners();
+  }
+
+  void setTrafficEnabled(bool value) {
+    if (_trafficEnabled == value) return;
+    _trafficEnabled = value;
+    refreshRoute();
+    notifyListeners();
+  }
+
+  /// Pickup suggestions biased to the confirmed pickup when we have one
+  /// (site: `geocodeApi.suggest(query, pickupPoint)`), otherwise to the
+  /// default service point.
+  Future<List<PlaceSuggestion>> suggestPlaces(String query) async {
+    final bias = _pickupPoint ?? GeocodingService.defaultPickup;
+    try {
+      return await GeocodingService.suggest(query, bias: bias);
+    } on ApiException {
+      return const [];
+    }
+  }
+
+  /// Resolves free text to one place (site: Enter / search button).
+  Future<PlaceSuggestion?> searchPlace(String query) async {
+    try {
+      return await GeocodingService.resolve(query);
+    } on ApiException {
+      return null;
+    }
+  }
+
+  // ── Route estimate (site: "Route estimate · 4.2 km · 12 min") ──────────
+
+  /// Fetches the road route for the current pickup → destination pair.
+  /// Best-effort: a failed lookup just means no ETA row, never an error
+  /// state — the backend stays the authority on whether a ride is bookable.
+  Future<void> refreshRoute() async {
+    final destination = _destinationPoint;
+    if (destination == null) {
+      _resetRoute();
+      return;
+    }
+    final pickup = _pickupPoint ?? GeocodingService.defaultPickup;
+    final key =
+        '${pickup.lat},${pickup.lng}:${destination.lat},${destination.lng}:$_trafficEnabled';
+    if (key == _routeKey && _routeEstimate != null) return;
+    _routeKey = key;
+    _isLoadingRoute = true;
+    notifyListeners();
+    final estimate = await RoutingService.route(
+      from: pickup,
+      to: destination,
+      traffic: _trafficEnabled,
+    );
+    // Ignore a stale response (the user changed something while we waited).
+    if (key != _routeKey) return;
+    _routeEstimate = estimate;
+    _isLoadingRoute = false;
+    notifyListeners();
+  }
+
+  void _resetRoute() {
+    _routeEstimate = null;
+    _routeKey = '';
+    _isLoadingRoute = false;
   }
 
   void selectOption(RideOption r) {
@@ -122,7 +280,11 @@ class RideProvider extends ChangeNotifier {
       return false;
     }
 
+    final pickup = _pickupPoint ?? GeocodingService.defaultPickup;
+    final pickupLabel = _pickupConfirmed ? _pickupLabel : 'Current location';
+
     _isBooking = true;
+    _isResolvingDestination = true;
     _error = null;
     _stage = BookingStage.matching;
     _assignedVehicle = null;
@@ -133,8 +295,36 @@ class RideProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final pickup = LocationService.defaultPickup;
-      final destinationPoint = LocationService.geocode(_destination!);
+      // Resolve the destination text to coordinates through the backend's
+      // geocoder (Stadia-backed, India-only). Coordinates must come from the
+      // same authority that validates them, otherwise bookings get rejected
+      // with 422 outside-India errors.
+      var destinationPoint = _destinationPoint;
+      if (destinationPoint == null) {
+        final resolved = await GeocodingService.resolve(_destination!);
+        if (resolved == null) {
+          _error =
+              'Could not find "${_destination!}". Try a nearby landmark.';
+          return false;
+        }
+        destinationPoint = GeoPoint(resolved.lat, resolved.lng);
+        _destinationPoint = destinationPoint;
+      }
+      if (!destinationPoint.isInIndiaServiceArea) {
+        // The backend would 422 this — fail fast with a clear message.
+        _error = 'Destination is outside the supported India service area.';
+        return false;
+      }
+
+      // Site order: resolve the road route first, then create the ride, so
+      // the estimate shown in the panel matches the booked trip.
+      final route = await RoutingService.route(
+        from: pickup,
+        to: destinationPoint,
+        traffic: _trafficEnabled,
+      );
+      if (route != null) _routeEstimate = route;
+
       final response = await _api.postJson(
         '/rides/request',
         body: {
@@ -145,7 +335,7 @@ class RideProvider extends ChangeNotifier {
           'ride_option_id': _selectedOption!.id,
           'ride_option_name': _selectedOption!.name,
           'ride_option_price': _selectedOption!.priceRange,
-          'pickup_label': 'Current location',
+          'pickup_label': pickupLabel,
           'destination_label': _destination,
         },
       );
@@ -157,6 +347,7 @@ class RideProvider extends ChangeNotifier {
         return false;
       }
       _startVehiclePolling();
+      _startStatusPolling();
       await loadMyRides(silent: true);
       return true;
     } catch (error) {
@@ -165,7 +356,28 @@ class RideProvider extends ChangeNotifier {
       return false;
     } finally {
       _isBooking = false;
+      _isResolvingDestination = false;
       notifyListeners();
+    }
+  }
+
+  /// Cancels the ride just booked (site `handleCancel` → DELETE /rides/{id}).
+  /// Only the backend decides whether a ride is still cancellable.
+  Future<bool> cancelActiveRide() async {
+    final rideId = _currentRideId;
+    if (rideId == null) return false;
+    try {
+      await _api.deleteJson('/rides/$rideId');
+      _stage = BookingStage.cancelled;
+      _stopVehicleTracking(keepAttempts: true);
+      _stopStatusPolling();
+      notifyListeners();
+      await loadMyRides(silent: true);
+      return true;
+    } catch (error) {
+      _error = _messageForException(error);
+      notifyListeners();
+      return false;
     }
   }
 
@@ -210,6 +422,8 @@ class RideProvider extends ChangeNotifier {
 
   void reset() {
     _destination = null;
+    _destinationPoint = null;
+    _isResolvingDestination = false;
     _selectedOption = null;
     _stage = BookingStage.matching;
     _error = null;
@@ -218,7 +432,26 @@ class RideProvider extends ChangeNotifier {
     _vehiclePollAttempts = 0;
     _vehicleAssignmentTimedOut = false;
     _isFetchingVehicle = false;
+    _lastPolledBackendStatus = null;
+    _resetRoute();
     _stopVehicleTracking();
+    _stopStatusPolling();
+    notifyListeners();
+  }
+
+  /// "Dismiss · Book new ride" (site) — drops the finished ride from the panel
+  /// without touching trip history.
+  void dismissActiveRide() {
+    _currentRideId = null;
+    _assignedVehicle = null;
+    _vehiclePollAttempts = 0;
+    _vehicleAssignmentTimedOut = false;
+    _isFetchingVehicle = false;
+    _lastPolledBackendStatus = null;
+    _stage = BookingStage.matching;
+    if (_destinationPoint == null) _resetRoute();
+    _stopVehicleTracking();
+    _stopStatusPolling();
     notifyListeners();
   }
 
@@ -227,6 +460,84 @@ class RideProvider extends ChangeNotifier {
   void clearForLogout() {
     reset();
     _myRides.clear();
+  }
+
+  // ── Status polling fallback ─────────────────────────────────────────────
+  // The backend delivers ride-status changes ONLY as WebSocket notifications.
+  // If the notifications socket is disconnected (its reconnect caps at 3
+  // attempts), the stage machine would freeze forever on "Finding your
+  // driver". This poll re-reads the authoritative status from the backend,
+  // and also restarts vehicle polling if a vehicle was assigned in the
+  // meantime (routes are optimized by backend jobs at any time).
+
+  void _startStatusPolling() {
+    _stopStatusPolling();
+    _statusPollTimer = Timer.periodic(_statusPollInterval, (_) async {
+      if (_isPollingStatus || _currentRideId == null) return;
+      if (isRideTerminal) {
+        _stopStatusPolling();
+        return;
+      }
+      _isPollingStatus = true;
+      try {
+        final response =
+            await _api.getJson('/rides/$_currentRideId');
+        if (response is Map<String, dynamic>) {
+          final backendStatus = (response['status'] ?? '').toString();
+          final statusChanged = backendStatus != _lastPolledBackendStatus;
+          _lastPolledBackendStatus = backendStatus;
+          final stageFor = _stageForStatus(backendStatus);
+          if (stageFor != null && stageFor != _stage) {
+            // Advance the stage machine from authoritative server state.
+            _stage = stageFor;
+            if (isRideTerminal) _stopVehicleTracking(keepAttempts: true);
+          }
+          // A vehicle may appear while we poll (backend jobs assign routes
+          // asynchronously). If the dedicated vehicle poller had given up,
+          // give it ONE fresh burst of attempts per status transition —
+          // restarting every tick would make the UI flicker between
+          // "Assigning…" and "Not available" forever.
+          if (statusChanged &&
+              !isRideTerminal &&
+              _assignedVehicle == null &&
+              _vehiclePollTimer == null) {
+            _startVehiclePolling();
+          }
+        }
+      } on ApiException catch (e) {
+        if (e.statusCode == 404 || e.statusCode == 403) {
+          // Ride gone or not ours — stop polling; UI stays on current stage.
+          _stopStatusPolling();
+        }
+        // Transient network/5xx: keep polling silently.
+      } catch (_) {
+        // Ignore one-off failures; the next tick retries.
+      } finally {
+        _isPollingStatus = false;
+      }
+    });
+  }
+
+  static BookingStage? _stageForStatus(String status) {
+    switch (status) {
+      case 'assigned':
+        return BookingStage.found;
+      case 'arriving':
+      case 'in_progress':
+        return BookingStage.arriving;
+      case 'completed':
+        return BookingStage.completed;
+      case 'cancelled':
+        return BookingStage.cancelled;
+      default:
+        return null; // pending/clustered keep the matching stage
+    }
+  }
+
+  void _stopStatusPolling() {
+    _statusPollTimer?.cancel();
+    _statusPollTimer = null;
+    _isPollingStatus = false;
   }
 
   // ── Vehicle assignment (F2) + live position (F3) ─────────────────────────
@@ -299,7 +610,7 @@ class RideProvider extends ChangeNotifier {
   /// Opens `/tracking/ws` and filters the broadcast vehicle snapshot down to
   /// just the one assigned to this ride, updating its live lat/lng.
   void _connectVehicleTracking() {
-    if (_trackingChannel != null) return;
+    if (_trackingChannel != null || _disposed) return;
     final vehicle = _assignedVehicle;
     if (vehicle == null) return;
 
@@ -315,6 +626,7 @@ class RideProvider extends ChangeNotifier {
       _trackingChannel = WebSocketChannel.connect(uri);
       _trackingSubscription = _trackingChannel!.stream.listen(
         (message) {
+          _trackingReconnectAttempts = 0;
           try {
             final data = jsonDecode(message as String) as Map<String, dynamic>;
             List<dynamic>? vehicles;
@@ -347,18 +659,40 @@ class RideProvider extends ChangeNotifier {
             // Ignore malformed socket payloads.
           }
         },
-        onError: (_) => _stopVehicleTracking(),
-        onDone: () => _stopVehicleTracking(),
+        onError: (_) => _scheduleTrackingReconnect(),
+        onDone: () => _scheduleTrackingReconnect(),
         cancelOnError: false,
       );
     }());
   }
 
-  void _stopVehicleTracking({bool keepAttempts = false}) {
-    _vehiclePollTimer?.cancel();
-    _vehiclePollTimer = null;
-    if (!keepAttempts) _vehiclePollAttempts = 0;
-    _isFetchingVehicle = false;
+  /// Bounded reconnect for the tracking socket: linear backoff (2s, 4s, 6s,
+  /// 8s, 10s), capped at [_maxTrackingReconnectAttempts] so a dead backend
+  /// can never cause a connection storm. Stops immediately for terminal
+  /// rides or a null token (logged out).
+  void _scheduleTrackingReconnect() {
+    _teardownTrackingChannel();
+    if (_disposed || isRideTerminal) return;
+    if (_trackingReconnectAttempts >= _maxTrackingReconnectAttempts) return;
+    _trackingReconnectAttempts++;
+    _trackingReconnectTimer?.cancel();
+    _trackingReconnectTimer = Timer(
+      Duration(seconds: 2 * _trackingReconnectAttempts),
+      () {
+        if (_disposed || isRideTerminal) return;
+        unawaited(() async {
+          final token = await _api.token;
+          if (token == null || token.isEmpty) return;
+          _connectVehicleTracking();
+        }());
+      },
+    );
+  }
+
+  /// Closes the socket + subscription without touching reconnect state.
+  void _teardownTrackingChannel() {
+    _trackingReconnectTimer?.cancel();
+    _trackingReconnectTimer = null;
     _trackingSubscription?.cancel();
     _trackingSubscription = null;
     try {
@@ -369,9 +703,20 @@ class RideProvider extends ChangeNotifier {
     _trackingChannel = null;
   }
 
+  void _stopVehicleTracking({bool keepAttempts = false}) {
+    _vehiclePollTimer?.cancel();
+    _vehiclePollTimer = null;
+    if (!keepAttempts) _vehiclePollAttempts = 0;
+    _isFetchingVehicle = false;
+    _teardownTrackingChannel();
+    if (!keepAttempts) _trackingReconnectAttempts = 0;
+  }
+
   @override
   void dispose() {
+    _disposed = true;
     _stopVehicleTracking();
+    _stopStatusPolling();
     super.dispose();
   }
 }

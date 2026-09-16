@@ -5,7 +5,6 @@ class RideOption {
   final String eta;
   final String priceRange;
   final int seats;
-  final String iconEmoji;
 
   RideOption({
     required this.id,
@@ -14,7 +13,6 @@ class RideOption {
     required this.eta,
     required this.priceRange,
     required this.seats,
-    required this.iconEmoji,
   }) {
     if (seats < 1) throw ArgumentError('seats must be >= 1');
   }
