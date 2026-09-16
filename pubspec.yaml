@@ -38,6 +38,15 @@ dependencies:
   provider: ^6.1.2
   shared_preferences: ^2.3.2
   web_socket_channel: ^3.0.1
+  # Clerk auth (email sign-in fallback for accounts created on the website —
+  # their password lives in Clerk, not the backend DB). JWTs from the Clerk
+  # session are sent to the existing backend, which accepts native-client
+  # Clerk tokens (CLERK_ALLOW_NATIVE_CLIENTS=true). No second auth system.
+  clerk_flutter: ^0.0.18-beta
+  clerk_auth: ^0.0.18-beta
+  flutter_map: ^8.3.2
+  latlong2: ^0.10.1
+  geolocator: ^14.0.3
 
 dev_dependencies:
   flutter_test:

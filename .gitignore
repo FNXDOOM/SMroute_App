@@ -52,3 +52,6 @@ Uber-like design/
 
 # Flutter metadata
 .metadata
+
+# env-style build configs (keep templates, ignore local copies)
+config.local.json
