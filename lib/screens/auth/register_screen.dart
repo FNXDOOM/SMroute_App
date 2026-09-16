@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../../providers/auth_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/ui_kit.dart';
 
+/// Create account — native counterpart of the website's Clerk sign-up card.
+/// Same structure as [LoginScreen] (brand, eyebrow, title, fields, one primary
+/// action) so the two auth screens read as one flow.
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
 
@@ -11,10 +16,10 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  final _nameController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _phoneController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
 
   @override
   void dispose() {
@@ -25,7 +30,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     super.dispose();
   }
 
-  void _handleRegister() async {
+  Future<void> _handleRegister() async {
     final auth = context.read<AuthProvider>();
     await auth.register(
       _nameController.text,
@@ -33,178 +38,154 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _phoneController.text,
       _passwordController.text,
     );
-    if (mounted && auth.isAuthenticated) {
+    if (!mounted) return;
+    if (auth.isAuthenticated) {
       Navigator.pushNamedAndRemoveUntil(context, '/home', (_) => false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>();
+
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: AppColors.bg,
       body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── Header ───────────────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 56, 24, 0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.gutter,
+            AppSpacing.xxl,
+            AppSpacing.gutter,
+            AppSpacing.xl,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── Brand ────────────────────────────────────────────────────
+              Row(
                 children: [
-                  IconButton(
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    icon: const Icon(Icons.arrow_back, color: Color(0xFF888888)),
-                    onPressed: () => Navigator.pop(context),
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: AppColors.paper,
+                      borderRadius: AppRadius.all(AppRadius.md),
+                    ),
+                    child: const Icon(
+                      Icons.route,
+                      size: 18,
+                      color: AppColors.ink,
+                    ),
                   ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    'Create your\naccount',
-                    style: AppTheme.headingLarge,
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Sign up to start riding',
-                    style: TextStyle(
-                      color: AppTheme.textTertiary,
-                      fontSize: 14,
+                  const SizedBox(width: AppSpacing.xs),
+                  Text(
+                    'SmartRoute',
+                    style: AppType.cardTitle.copyWith(
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ],
               ),
-            ),
-            const SizedBox(height: 32),
-            // ── Form ─────────────────────────────────────────────────────────
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Consumer<AuthProvider>(
-                  builder: (context, auth, _) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Full Name
-                        const Text('FULL NAME', style: AppTheme.labelUppercase),
-                        const SizedBox(height: 6),
-                        TextField(
-                          controller: _nameController,
-                          keyboardType: TextInputType.name,
-                          textInputAction: TextInputAction.next,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            hintText: 'Your full name',
-                          ),
-                        ),
-                        const SizedBox(height: 20),
+              const SizedBox(height: AppSpacing.xxxl),
 
-                        // Email
-                        const Text('EMAIL', style: AppTheme.labelUppercase),
-                        const SizedBox(height: 6),
-                        TextField(
-                          controller: _emailController,
-                          keyboardType: TextInputType.emailAddress,
-                          textInputAction: TextInputAction.next,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            hintText: 'your@email.com',
-                          ),
-                        ),
-                        const SizedBox(height: 20),
+              // ── Headline ─────────────────────────────────────────────────
+              const SectionLabel('Get started'),
+              const SizedBox(height: AppSpacing.xs),
+              const Text('Create your account', style: AppType.pageTitle),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'Sign up to book rides, track drivers live and manage trips.',
+                style: AppType.small.copyWith(color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: AppSpacing.xl),
 
-                        // Phone Number
-                        const Text(
-                          'PHONE NUMBER',
-                          style: AppTheme.labelUppercase,
-                        ),
-                        const SizedBox(height: 6),
-                        TextField(
-                          controller: _phoneController,
-                          keyboardType: TextInputType.phone,
-                          textInputAction: TextInputAction.next,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            hintText: '+1 (555) 000-0000',
-                          ),
-                        ),
-                        const SizedBox(height: 20),
+              AppField(
+                label: 'Full name',
+                controller: _nameController,
+                hint: 'Your full name',
+                icon: Icons.person_outline,
+                keyboardType: TextInputType.name,
+                textInputAction: TextInputAction.next,
+                enabled: !auth.isLoading,
+              ),
+              const SizedBox(height: AppSpacing.md),
+              AppField(
+                label: 'Email',
+                controller: _emailController,
+                hint: 'you@example.com',
+                icon: Icons.mail_outline,
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
+                enabled: !auth.isLoading,
+              ),
+              const SizedBox(height: AppSpacing.md),
+              AppField(
+                label: 'Phone number',
+                controller: _phoneController,
+                hint: '+91 98765 43210',
+                icon: Icons.phone_outlined,
+                keyboardType: TextInputType.phone,
+                textInputAction: TextInputAction.next,
+                enabled: !auth.isLoading,
+              ),
+              const SizedBox(height: AppSpacing.md),
+              AppField(
+                label: 'Password',
+                controller: _passwordController,
+                hint: 'At least 6 characters',
+                icon: Icons.lock_outline,
+                obscure: true,
+                textInputAction: TextInputAction.done,
+                enabled: !auth.isLoading,
+                onSubmitted: (_) => _handleRegister(),
+              ),
 
-                        // Password
-                        const Text('PASSWORD', style: AppTheme.labelUppercase),
-                        const SizedBox(height: 6),
-                        TextField(
-                          controller: _passwordController,
-                          obscureText: true,
-                          textInputAction: TextInputAction.done,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            hintText: '••••••••',
-                          ),
-                          onSubmitted: (_) => _handleRegister(),
-                        ),
-                        const SizedBox(height: 24),
+              if (auth.error != null) ...[
+                const SizedBox(height: AppSpacing.sm),
+                ErrorBanner(message: auth.error!),
+              ],
 
-                        // Error message
-                        if (auth.error != null) ...[
-                          Text(
-                            auth.error!,
-                            style: const TextStyle(
-                              color: Colors.redAccent,
-                              fontSize: 13,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                        ],
-
-                        // Create account button
-                        ElevatedButton(
-                          onPressed: auth.isLoading ? null : _handleRegister,
-                          child: auth.isLoading
-                              ? const SizedBox(
-                                  height: 20,
-                                  width: 20,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.black,
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Text('Create account'),
-                        ),
-                        const SizedBox(height: 24),
-
-                        // Sign in link
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Text(
-                              'Already have an account? ',
-                              style: TextStyle(
-                                color: Color(0xFF555555),
-                                fontSize: 13,
-                              ),
-                            ),
-                            GestureDetector(
-                              onTap: () => Navigator.pop(context),
-                              child: const Text(
-                                'Sign in',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  decoration: TextDecoration.underline,
-                                  decorationColor: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 32),
-                      ],
-                    );
-                  },
+              const SizedBox(height: AppSpacing.lg),
+              AppButton(
+                label: 'Create account',
+                loading: auth.isLoading,
+                onPressed: auth.isLoading ? null : _handleRegister,
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'Already have an account? ',
+                    style: AppType.caption.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  PressableScale(
+                    onTap: () => Navigator.pop(context),
+                    child: Text(
+                      'Sign in',
+                      style: AppType.caption.copyWith(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w600,
+                        decoration: TextDecoration.underline,
+                        decorationColor: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.xxl),
+              Text(
+                'By continuing, you agree to our Terms and Privacy Policy.',
+                textAlign: TextAlign.center,
+                style: AppType.caption.copyWith(
+                  color: AppColors.textSubtle,
+                  fontSize: 12,
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

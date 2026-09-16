@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../../providers/auth_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/ui_kit.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -13,11 +15,13 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _codeController = TextEditingController();
 
   @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _codeController.dispose();
     super.dispose();
   }
 
@@ -29,198 +33,212 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  /// Step 2 of website-account sign-in: verify the emailed 6-digit code.
+  void _handleVerifyCode() async {
+    final auth = context.read<AuthProvider>();
+    await auth.verifyEmailCode(_codeController.text);
+    if (mounted && auth.isAuthenticated) {
+      Navigator.pushNamedAndRemoveUntil(context, '/home', (_) => false);
+    }
+  }
+
+  void _handleResendCode() async {
+    await context.read<AuthProvider>().resendEmailCode();
+  }
+
+  void _handleCancelCode() async {
+    _codeController.clear();
+    await context.read<AuthProvider>().cancelEmailCode();
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
+    final isCodeStep = auth.isAwaitingEmailCode;
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: AppColors.bg,
       body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── Top section ─────────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 56, 24, 0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.gutter,
+            AppSpacing.xxl,
+            AppSpacing.gutter,
+            AppSpacing.xl,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── Brand ────────────────────────────────────────────────────
+              Row(
                 children: [
-                  // Logo row
-                  Row(
-                    children: const [
-                      Text('🚗', style: TextStyle(fontSize: 28)),
-                      SizedBox(width: 8),
-                      Text(
-                        'SmartRoute',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                          letterSpacing: -0.5,
-                        ),
-                      ),
-                    ],
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: AppColors.paper,
+                      borderRadius: AppRadius.all(AppRadius.md),
+                    ),
+                    child: const Icon(
+                      Icons.route,
+                      size: 18,
+                      color: AppColors.ink,
+                    ),
                   ),
-                  const SizedBox(height: 48),
-                  // Headline
-                  const Text(
-                    "What's your\nemail or phone?",
-                    style: AppTheme.headingLarge,
+                  const SizedBox(width: AppSpacing.xs),
+                  Text(
+                    'SmartRoute',
+                    style: AppType.cardTitle.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: AppSpacing.xxxl),
 
-            // ── Form section ─────────────────────────────────────────────────
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Email / phone field
-                    TextField(
-                      controller: _emailController,
-                      textInputAction: TextInputAction.next,
-                      keyboardType: TextInputType.emailAddress,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                        hintText: 'Email or phone number',
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    // Password field
-                    TextField(
-                      controller: _passwordController,
-                      obscureText: true,
-                      textInputAction: TextInputAction.done,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                        hintText: 'Password',
-                      ),
-                      onSubmitted: (_) => _handleLogin(),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Error message
-                    if (auth.error != null) ...[
-                      Text(
-                        auth.error!,
-                        style: TextStyle(
-                          color: Colors.red.shade400,
-                          fontSize: 13,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                    ],
-
-                    // Continue button
-                    ElevatedButton(
-                      onPressed: auth.isLoading ? null : _handleLogin,
-                      child: auth.isLoading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                color: Colors.black,
-                                strokeWidth: 2,
-                              ),
-                            )
-                          : const Text('Continue'),
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Divider with 'or'
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Divider(
-                            color: const Color(0xFF555555),
-                            thickness: 1,
-                          ),
-                        ),
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 12),
-                          child: Text(
-                            'or',
-                            style: TextStyle(
-                              color: Color(0xFF555555),
-                              fontSize: 14,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Divider(
-                            color: const Color(0xFF555555),
-                            thickness: 1,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Create account button
-                    OutlinedButton(
-                      onPressed: () =>
-                          Navigator.pushNamed(context, '/register'),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Color(0xFF2A2A2A)),
-                        foregroundColor: Colors.white,
-                        minimumSize: const Size(double.infinity, 52),
-                        shape: RoundedRectangleBorder(
-                          borderRadius:
-                              BorderRadius.circular(AppTheme.radiusMd),
-                        ),
-                        textStyle: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 16,
-                        ),
-                      ),
-                      child: const Text('Create account'),
-                    ),
-
-                    const SizedBox(height: 32),
-                  ],
+              // ── Headline ─────────────────────────────────────────────────
+              SectionLabel(isCodeStep ? 'Verification' : 'Sign in'),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                isCodeStep ? 'Check your email' : 'Welcome back',
+                style: AppType.pageTitle,
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                isCodeStep
+                    ? 'We sent a 6-digit code to ${auth.pendingEmail}. '
+                        'Enter it below to continue.'
+                    : 'Sign in with the email and password you registered '
+                        'with.',
+                style: AppType.small.copyWith(
+                  color: AppColors.textSecondary,
                 ),
               ),
-            ),
+              const SizedBox(height: AppSpacing.xl),
 
-            // ── Legal text ───────────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-              child: Text.rich(
-                TextSpan(
-                  style: const TextStyle(
-                    color: Color(0xFF888888),
-                    fontSize: 12,
-                  ),
+              if (isCodeStep) ...[
+                // ── Email-code step (website accounts) ───────────────────
+                AppField(
+                  label: 'Verification code',
+                  controller: _codeController,
+                  hint: '000000',
+                  icon: Icons.password_outlined,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  autofocus: true,
+                  textAlign: TextAlign.center,
+                  fontSize: 22,
+                  letterSpacing: 6,
+                  onSubmitted: (_) => _handleVerifyCode(),
+                ),
+                if (auth.error != null) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  ErrorBanner(message: auth.error!),
+                ],
+                const SizedBox(height: AppSpacing.md),
+                AppButton(
+                  label: 'Verify code',
+                  loading: auth.isLoading,
+                  onPressed: auth.isLoading ? null : _handleVerifyCode,
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Row(
                   children: [
-                    const TextSpan(text: 'By continuing, you agree to our '),
-                    TextSpan(
-                      text: 'Terms',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        decoration: TextDecoration.underline,
-                        decorationColor: Colors.white,
+                    Expanded(
+                      child: AppButton(
+                        label: 'Resend code',
+                        variant: AppButtonVariant.ghost,
+                        expand: false,
+                        height: 44,
+                        onPressed:
+                            auth.isLoading ? null : _handleResendCode,
                       ),
                     ),
-                    const TextSpan(text: ' and '),
-                    TextSpan(
-                      text: 'Privacy Policy',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        decoration: TextDecoration.underline,
-                        decorationColor: Colors.white,
+                    Expanded(
+                      child: AppButton(
+                        label: 'Use a different email',
+                        variant: AppButtonVariant.ghost,
+                        expand: false,
+                        height: 44,
+                        onPressed:
+                            auth.isLoading ? null : _handleCancelCode,
                       ),
                     ),
-                    const TextSpan(text: '.'),
                   ],
                 ),
+              ] else ...[
+                // ── Email / password step ────────────────────────────────
+                AppField(
+                  label: 'Email',
+                  controller: _emailController,
+                  hint: 'you@example.com',
+                  icon: Icons.mail_outline,
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.next,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                AppField(
+                  label: 'Password',
+                  controller: _passwordController,
+                  hint: 'Your password',
+                  icon: Icons.lock_outline,
+                  obscure: true,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _handleLogin(),
+                ),
+                if (auth.error != null) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  ErrorBanner(message: auth.error!),
+                ],
+                const SizedBox(height: AppSpacing.lg),
+                AppButton(
+                  label: 'Continue',
+                  loading: auth.isLoading,
+                  onPressed: auth.isLoading ? null : _handleLogin,
+                ),
+                const SizedBox(height: AppSpacing.lg),
+
+                // Hairline divider with centered label (site separator).
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Divider(color: AppColors.border, height: 1),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.sm,
+                      ),
+                      child: Text(
+                        'or',
+                        style: AppType.caption.copyWith(
+                          color: AppColors.textSubtle,
+                        ),
+                      ),
+                    ),
+                    const Expanded(
+                      child: Divider(color: AppColors.border, height: 1),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                AppButton(
+                  label: 'Create account',
+                  variant: AppButtonVariant.secondary,
+                  onPressed: () => Navigator.pushNamed(context, '/register'),
+                ),
+              ],
+
+              const SizedBox(height: AppSpacing.xxl),
+              Text(
+                'By continuing, you agree to our Terms and Privacy Policy.',
                 textAlign: TextAlign.center,
+                style: AppType.caption.copyWith(
+                  color: AppColors.textSubtle,
+                  fontSize: 12,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

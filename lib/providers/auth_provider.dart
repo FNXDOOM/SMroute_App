@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../config/app_env.dart';
 import '../models/user.dart';
 import '../services/api_client.dart';
+import '../services/clerk_auth_service.dart';
 
 /// Email format used for lightweight client-side validation.
 final RegExp _emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
@@ -16,6 +18,10 @@ class AuthProvider extends ChangeNotifier {
   bool _isBootstrapping = true;
   String? _error;
 
+  // Two-step email sign-in for website accounts (Clerk emailed code).
+  bool _awaitingEmailCode = false;
+  String _pendingEmail = '';
+
   AuthProvider() {
     unawaited(restoreSession());
   }
@@ -26,6 +32,8 @@ class AuthProvider extends ChangeNotifier {
   bool get isBootstrapping => _isBootstrapping;
   String? get error => _error;
   bool get isAuthenticated => _currentUser != null;
+  bool get isAwaitingEmailCode => _awaitingEmailCode;
+  String get pendingEmail => _pendingEmail;
 
   /// Validates that none of the provided fields are empty or whitespace-only.
   bool _hasEmptyFields(List<String> fields) {
@@ -67,7 +75,20 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       await _api.initialize();
-      final token = await _api.token;
+      var token = await _api.token;
+
+      // Clerk sessions (website-account email fallback) use short-lived
+      // JWTs (~60s) — a token persisted from a previous launch is always
+      // stale. When a live Clerk session exists, always mint a fresh one
+      // instead.
+      if (ClerkAuthService.state != null) {
+        final clerkJwt = await ClerkAuthService.refreshSessionToken();
+        if (clerkJwt != null && clerkJwt.isNotEmpty) {
+          token = clerkJwt;
+          await _api.setToken(clerkJwt);
+        }
+      }
+
       if (token == null || token.isEmpty) {
         _currentUser = null;
         return;
@@ -142,11 +163,80 @@ class AuthProvider extends ChangeNotifier {
     } on FormatException {
       _error = 'Unexpected server response. Please try again.';
     } catch (error) {
-      _error = _messageForException(error);
+      // Accounts created on the WEBSITE keep their password in Clerk — the
+      // backend's users table holds an unusable random hash for them, so
+      // /auth/login 401s even for a correct password. This Clerk instance
+      // uses emailed one-time codes as its only first factor (password
+      // sign-in is disabled), so fall back to the email-code flow: send a
+      // code to the entered email and wait for the user to type it in.
+      if (error is ApiException &&
+          error.isUnauthorized &&
+          AppEnv.hasClerk &&
+          ClerkAuthService.state != null) {
+        final result = await ClerkAuthService.startEmailCodeSignIn(
+          email.trim(),
+        );
+        if (result.success) {
+          _awaitingEmailCode = true;
+          _pendingEmail = email.trim();
+          _error = null;
+        } else {
+          _error = result.errorMessage;
+        }
+      } else {
+        _error = _messageForException(error);
+      }
     } finally {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  /// Step 2 of website-account sign-in: verify the 6-digit code emailed by
+  /// Clerk. On success loads the user via /auth/me (which provisions/links
+  /// the DB user) and clears the pending-code state.
+  Future<void> verifyEmailCode(String code) async {
+    if (code.trim().isEmpty) {
+      _error = 'Enter the 6-digit code from your email.';
+      notifyListeners();
+      return;
+    }
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final result = await ClerkAuthService.completeEmailCodeSignIn(code);
+      if (result.success) {
+        await restoreSession();
+        if (_currentUser != null) {
+          _awaitingEmailCode = false;
+          _pendingEmail = '';
+        }
+      } else {
+        _error = result.errorMessage;
+      }
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Re-sends the pending 6-digit code ("Didn't get the code?").
+  Future<void> resendEmailCode() async {
+    if (!_awaitingEmailCode) return;
+    final ok = await ClerkAuthService.resendEmailCode();
+    _error = ok ? null : "Couldn't resend the code. Try starting again.";
+    notifyListeners();
+  }
+
+  /// Abandons the email-code step and returns to plain email/password mode.
+  Future<void> cancelEmailCode() async {
+    await ClerkAuthService.cancelPendingSignIn();
+    _awaitingEmailCode = false;
+    _pendingEmail = '';
+    _error = null;
+    notifyListeners();
   }
 
   String? _validateRegister(
@@ -222,14 +312,17 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
-  /// Updates the current user's profile (name, email, phone).
+  /// Updates the current user's profile.
+  ///
+  /// Only name and phone are writable — the website's ProfileView does the
+  /// same (`authApi.updateProfile({ name, phone })`). Email belongs to the
+  /// identity provider (Clerk), so writing it locally would desync the account
+  /// from the identity its token is issued for.
   Future<String?> updateProfile({
     required String name,
-    required String email,
     required String phone,
   }) async {
     if (name.trim().isEmpty) return 'Name is required.';
-    if (!_emailPattern.hasMatch(email.trim())) return 'Enter a valid email.';
 
     _isLoading = true;
     _error = null;
@@ -240,7 +333,6 @@ class AuthProvider extends ChangeNotifier {
         '/auth/me',
         body: {
           'name': name.trim(),
-          'email': email.trim(),
           'phone': phone.trim(),
         },
       );
@@ -261,8 +353,15 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
-  /// Clears the current user session.
+  /// Clears the current user session. For Clerk sessions (website-account
+  /// email fallback) this also signs out of Clerk; backend-native
+  /// email/password users are unaffected.
   Future<void> logout() async {
+    try {
+      await ClerkAuthService.signOut();
+    } catch (_) {
+      // Best-effort — token clearing below must always run.
+    }
     try {
       await _api.clearToken();
     } catch (_) {

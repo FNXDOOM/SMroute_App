@@ -1,18 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/app_env.dart';
+
 class ApiClient {
-  /// Override with `--dart-define=SMARTROUTE_API_BASE_URL=http://<host>:8000`.
+  /// Base URL comes from [AppEnv] (build-time config; see lib/config/app_env.dart).
   /// NOTE: `127.0.0.1` reaches the host only from desktop/iOS-simulator.
   /// On the Android emulator use `http://10.0.2.2:8000`; on a physical
-  /// device use your machine's LAN IP (e.g. `http://192.168.1.5:8000`).
+  /// device use your production URL or your machine's LAN IP.
   ApiClient._({String? baseUrl})
-      : baseUrl = (baseUrl ?? const String.fromEnvironment(
-          'SMARTROUTE_API_BASE_URL',
-          defaultValue: 'http://127.0.0.1:8000',
-        )).replaceAll(RegExp(r'/$'), '');
+      : baseUrl = (baseUrl ?? AppEnv.apiBaseUrl).replaceAll(RegExp(r'/$'), '');
 
   /// Default timeout for every request so UI loading states can't hang forever.
   static const Duration requestTimeout = Duration(seconds: 15);
@@ -71,18 +72,27 @@ class ApiClient {
     return result;
   }
 
+  /// Dev-only request logging. Never logs tokens, passwords or request
+  /// bodies — only method, path and duration (see README.md §Security review).
+  void _logRequest(String method, Uri url, Duration elapsed, int status) {
+    if (!kDebugMode) return;
+    // ignore: avoid_print
+    print('API  $method ${url.path}  $status  ${elapsed.inMilliseconds}ms');
+  }
+
   Future<dynamic> getJson(
     String path, {
     Map<String, dynamic>? queryParameters,
     bool authenticated = true,
   }) async {
     try {
+      final url = uri(path, queryParameters);
+      final sw = Stopwatch()..start();
       final response = await http
-          .get(
-            uri(path, queryParameters),
-            headers: await headers(authenticated: authenticated),
-          )
+          .get(url, headers: await headers(authenticated: authenticated))
           .timeout(requestTimeout);
+      sw.stop();
+      _logRequest('GET', url, sw.elapsed, response.statusCode);
       return _decodeResponse(response);
     } on TimeoutException {
       throw ApiException(0, 'Request timed out. Check your connection.');
@@ -96,13 +106,17 @@ class ApiClient {
     bool authenticated = true,
   }) async {
     try {
+      final url = uri(path, queryParameters);
+      final sw = Stopwatch()..start();
       final response = await http
           .post(
-            uri(path, queryParameters),
+            url,
             headers: await headers(authenticated: authenticated),
             body: body == null ? null : jsonEncode(body),
           )
           .timeout(requestTimeout);
+      sw.stop();
+      _logRequest('POST', url, sw.elapsed, response.statusCode);
       return _decodeResponse(response);
     } on TimeoutException {
       throw ApiException(0, 'Request timed out. Check your connection.');
@@ -116,13 +130,17 @@ class ApiClient {
     bool authenticated = true,
   }) async {
     try {
+      final url = uri(path, queryParameters);
+      final sw = Stopwatch()..start();
       final response = await http
           .patch(
-            uri(path, queryParameters),
+            url,
             headers: await headers(authenticated: authenticated),
             body: body == null ? null : jsonEncode(body),
           )
           .timeout(requestTimeout);
+      sw.stop();
+      _logRequest('PATCH', url, sw.elapsed, response.statusCode);
       return _decodeResponse(response);
     } on TimeoutException {
       throw ApiException(0, 'Request timed out. Check your connection.');
@@ -135,12 +153,13 @@ class ApiClient {
     bool authenticated = true,
   }) async {
     try {
+      final url = uri(path, queryParameters);
+      final sw = Stopwatch()..start();
       final response = await http
-          .delete(
-            uri(path, queryParameters),
-            headers: await headers(authenticated: authenticated),
-          )
+          .delete(url, headers: await headers(authenticated: authenticated))
           .timeout(requestTimeout);
+      sw.stop();
+      _logRequest('DELETE', url, sw.elapsed, response.statusCode);
       return _decodeResponse(response);
     } on TimeoutException {
       throw ApiException(0, 'Request timed out. Check your connection.');
@@ -174,7 +193,17 @@ class ApiClient {
         data['message'].toString(),
       _ => body?.toString() ?? 'Request failed with status ${response.statusCode}',
     };
-    throw ApiException(response.statusCode, message);
+    throw ApiException(response.statusCode, message,
+        retryAfterSeconds: _parseRetryAfter(response));
+  }
+
+  /// Parses the backend's `Retry-After` header (seconds) on 429 responses.
+  /// The backend's RateLimitBodyGuardMiddleware always sends it on 429.
+  static int? _parseRetryAfter(http.Response response) {
+    if (response.statusCode != 429) return null;
+    final raw = response.headers['retry-after'];
+    if (raw == null) return null;
+    return int.tryParse(raw.trim());
   }
 }
 
@@ -182,7 +211,12 @@ class ApiException implements Exception {
   final int statusCode;
   final String message;
 
-  ApiException(this.statusCode, this.message);
+  /// Seconds to wait before retrying, from the backend's `Retry-After`
+  /// header. Only set on 429 responses. Callers SHOULD honour it instead of
+  /// retrying immediately (which would just hit the limit again).
+  final int? retryAfterSeconds;
+
+  ApiException(this.statusCode, this.message, {this.retryAfterSeconds});
 
   /// True when the backend rejected the credentials / token.
   bool get isUnauthorized => statusCode == 401 || statusCode == 403;
@@ -190,6 +224,13 @@ class ApiException implements Exception {
   /// True when the request never reached the backend (timeout / offline /
   /// DNS). Callers should NOT treat this as "logged out".
   bool get isNetworkFailure => statusCode == 0;
+
+  /// True when the backend rate-limited this request.
+  bool get isRateLimited => statusCode == 429;
+
+  /// True when the backend rejected the payload (validation, or outside the
+  /// India service area).
+  bool get isValidationError => statusCode == 400 || statusCode == 422;
 
   @override
   String toString() => 'ApiException($statusCode, $message)';
