@@ -68,16 +68,15 @@ void main() {
       await tester.pump();
 
       expect(find.text('SmartRoute'), findsOneWidget);
-      expect(find.textContaining("email or phone"), findsOneWidget);
+      expect(find.textContaining('Welcome back'), findsOneWidget);
     });
 
     testWidgets('shows email and password fields', (tester) async {
       await tester.pumpWidget(_wrapWithProviders(const LoginScreen()));
       await tester.pump();
 
-      expect(find.widgetWithText(TextField, 'Email or phone number'),
-          findsOneWidget);
-      expect(find.widgetWithText(TextField, 'Password'), findsOneWidget);
+      expect(find.widgetWithText(TextField, 'you@example.com'), findsOneWidget);
+      expect(find.widgetWithText(TextField, 'Your password'), findsOneWidget);
     });
 
     testWidgets('Continue and Create account buttons are present',
@@ -108,7 +107,7 @@ void main() {
       await tester.pump();
 
       final emailField =
-          find.widgetWithText(TextField, 'Email or phone number');
+          find.widgetWithText(TextField, 'you@example.com');
       await tester.enterText(emailField, 'test@example.com');
       await tester.pump();
 
@@ -128,11 +127,11 @@ void main() {
       // Headline (both words appear somewhere)
       expect(find.textContaining('Create your'), findsOneWidget);
 
-      // Label chips above each field
-      expect(find.text('FULL NAME'), findsOneWidget);
-      expect(find.text('EMAIL'), findsOneWidget);
-      expect(find.text('PHONE NUMBER'), findsOneWidget);
-      expect(find.text('PASSWORD'), findsOneWidget);
+      // Field labels (design system: 13px semibold, sentence case)
+      expect(find.text('Full name'), findsOneWidget);
+      expect(find.text('Email'), findsOneWidget);
+      expect(find.text('Phone number'), findsOneWidget);
+      expect(find.text('Password'), findsOneWidget);
 
       // Four TextField widgets present
       expect(find.byType(TextField), findsNWidgets(4));
@@ -243,8 +242,8 @@ void main() {
   group('PaymentProvider', () {
     test('initial state is clean', () {
       final pay = PaymentProvider();
-      expect(pay.cards, isEmpty);
       expect(pay.transactions, isEmpty);
+      expect(pay.totalSpent, 0.0);
       expect(pay.isLoading, isFalse);
       expect(pay.error, isNull);
     });
@@ -252,8 +251,8 @@ void main() {
     test('clear resets all state', () {
       final pay = PaymentProvider();
       pay.clear();
-      expect(pay.cards, isEmpty);
-      expect(pay.walletBalance, '\$0.00');
+      expect(pay.transactions, isEmpty);
+      expect(pay.totalSpent, 0.0);
       expect(pay.error, isNull);
     });
   });
