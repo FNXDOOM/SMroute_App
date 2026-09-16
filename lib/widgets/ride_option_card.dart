@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
+
 import '../models/ride_option.dart';
 import '../theme/app_theme.dart';
 
+/// Ride tier row — the website's `ride-tier` radio card: 12px radius, hairline
+/// border, 44px icon tile, name + "desc · eta · seats", bold tabular price.
+/// Selected state uses the site's black/white emphasis instead of an accent.
 class RideOptionCard extends StatelessWidget {
-  final RideOption ride;
-  final bool isSelected;
-  final VoidCallback onTap;
-
   const RideOptionCard({
     super.key,
     required this.ride,
@@ -14,84 +14,100 @@ class RideOptionCard extends StatelessWidget {
     required this.onTap,
   });
 
+  final RideOption ride;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  /// The backend's option IDs are the source of truth (see README.md);
+  /// map each to the closest line icon from the website's set.
+  static IconData _iconFor(String id) {
+    switch (id) {
+      case 'swift-xl':
+        return Icons.group_outlined;
+      case 'swift-lux':
+        return Icons.workspace_premium_outlined;
+      case 'swift-moto':
+        return Icons.two_wheeler_outlined;
+      case 'swift-x':
+      default:
+        return Icons.directions_car_outlined;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceColor,
-          borderRadius: BorderRadius.circular(AppTheme.radiusXl),
-          border: Border.all(
-            color: isSelected ? Colors.white : Colors.transparent,
-            width: 2,
-          ),
-        ),
-        child: Row(
-          children: [
-            Text(
-              ride.iconEmoji,
-              style: const TextStyle(fontSize: 28),
+    return Semantics(
+      selected: isSelected,
+      button: true,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: AppRadius.all(AppRadius.lg),
+          child: Ink(
+            decoration: BoxDecoration(
+              color: isSelected ? AppColors.surfaceAlt : Colors.transparent,
+              borderRadius: AppRadius.all(AppRadius.lg),
+              border: Border.all(
+                color: isSelected ? AppColors.paper : AppColors.border,
+              ),
+              boxShadow: isSelected ? AppShadows.sm : null,
             ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            child: Padding(
+              padding: const EdgeInsets.all(AppSpacing.sm),
+              child: Row(
                 children: [
-                  Row(
-                    children: [
-                      Text(
-                        ride.name,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '· ${ride.seats} seats',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: Color(0xFF666666),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    ride.description,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: Color(0xFF888888),
+                  // Icon tile — inverted when selected (site recipe).
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? AppColors.paper
+                          : AppColors.surfaceAlt,
+                      borderRadius: AppRadius.all(AppRadius.md),
                     ),
+                    child: Icon(
+                      _iconFor(ride.id),
+                      size: 19,
+                      color: isSelected
+                          ? AppColors.ink
+                          : AppColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          ride.name,
+                          style: AppType.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${ride.description} · ${ride.eta} · '
+                          '${ride.seats} seats',
+                          style: AppType.caption.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.xs),
+                  Text(
+                    ride.priceRange,
+                    style: AppType.data,
                   ),
                 ],
               ),
             ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  ride.priceRange,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  ride.eta,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppTheme.accentBlue,
-                  ),
-                ),
-              ],
-            ),
-          ],
+          ),
         ),
       ),
     );

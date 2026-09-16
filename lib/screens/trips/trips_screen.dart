@@ -1,9 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../../models/ride_request_record.dart';
+import '../../models/ride_stage.dart';
 import '../../providers/ride_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/ui_kit.dart';
 
+/// Trips — the website's `TripsView` + `TripDetail`, on the app's flat list
+/// language (hairline rows, no card per trip) with a detail sheet.
+///
+/// Every row is real: rides come from `GET /rides/my-rides` in the order the
+/// backend returns them. Nothing is scheduled, simulated or invented — the
+/// website has no scheduled-ride feature, so neither does the app.
 class TripsScreen extends StatefulWidget {
   const TripsScreen({super.key});
 
@@ -12,126 +21,96 @@ class TripsScreen extends StatefulWidget {
 }
 
 class _TripsScreenState extends State<TripsScreen> {
-  bool _isPast = true;
-
   @override
   void initState() {
     super.initState();
-    // Load rides from backend when screen opens.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<RideProvider>().loadMyRides();
+      if (mounted) context.read<RideProvider>().loadMyRides();
     });
   }
 
+  Future<void> _refresh() => context.read<RideProvider>().loadMyRides();
+
   @override
   Widget build(BuildContext context) {
+    final provider = context.watch<RideProvider>();
+    final rides = provider.myRides;
+    final loading = provider.isLoadingRides && rides.isEmpty;
+
     return Scaffold(
-      backgroundColor: AppTheme.scaffoldBg,
+      backgroundColor: AppColors.bg,
       body: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // ── Header ──────────────────────────────────────────────────────
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20)
-                  .copyWith(top: 16, bottom: 8),
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back,
-                        color: Color(0xFF888888)),
-                    onPressed: () =>
-                        Navigator.pushReplacementNamed(context, '/home'),
-                  ),
-                  Expanded(
-                    child: Text(
-                      'Your trips',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 48),
-                ],
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.gutter,
+                AppSpacing.md,
+                AppSpacing.gutter,
+                AppSpacing.sm,
+              ),
+              child: PageHeader(
+                title: 'Your trips',
+                description: rides.isEmpty
+                    ? 'Your ride history'
+                    : '${rides.length} booking${rides.length == 1 ? '' : 's'}',
+                onBack: () => Navigator.pushReplacementNamed(context, '/home'),
+                backLabel: 'Home',
               ),
             ),
-
-            // ── Tab switcher ─────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16)
-                  .copyWith(bottom: 12),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: AppTheme.surfaceColor,
-                  borderRadius:
-                      BorderRadius.circular(AppTheme.radiusMd),
-                ),
-                padding: const EdgeInsets.all(4),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () => setState(() => _isPast = true),
-                        child: Container(
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 8),
-                          decoration: BoxDecoration(
-                            color: _isPast
-                                ? Colors.white
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            'Past',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: _isPast
-                                  ? Colors.black
-                                  : const Color(0xFF888888),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () => setState(() => _isPast = false),
-                        child: Container(
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 8),
-                          decoration: BoxDecoration(
-                            color: !_isPast
-                                ? Colors.white
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            'Scheduled',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: !_isPast
-                                  ? Colors.black
-                                  : const Color(0xFF888888),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            // ── Content ───────────────────────────────────────────────────
             Expanded(
-              child: _isPast ? _buildPastList() : _buildScheduledEmpty(),
+              child: loading
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: AppSpacing.gutter,
+                      ),
+                      child: SkeletonRows(count: 5, height: 72),
+                    )
+                  : RefreshIndicator(
+                      color: AppColors.paper,
+                      backgroundColor: AppColors.surface,
+                      onRefresh: _refresh,
+                      child: rides.isEmpty
+                          ? ListView(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpacing.gutter,
+                                vertical: AppSpacing.sm,
+                              ),
+                              children: [
+                                EmptyState(
+                                  icon: Icons.trip_origin,
+                                  title: 'No trips yet',
+                                  hint:
+                                      'Book your first ride from Home — it '
+                                      'will show up here with live status.',
+                                  action: AppButton(
+                                    label: 'Book a ride',
+                                    onPressed: () =>
+                                        Navigator.pushReplacementNamed(
+                                          context,
+                                          '/home',
+                                        ),
+                                  ),
+                                ),
+                              ],
+                            )
+                          : ListView(
+                              padding: const EdgeInsets.fromLTRB(
+                                AppSpacing.gutter,
+                                0,
+                                AppSpacing.gutter,
+                                AppSpacing.xl,
+                              ),
+                              children: [
+                                for (final ride in rides)
+                                  _TripRow(
+                                    ride: ride,
+                                    onTap: () => _openDetail(ride),
+                                  ),
+                              ],
+                            ),
+                    ),
             ),
           ],
         ),
@@ -139,94 +118,57 @@ class _TripsScreenState extends State<TripsScreen> {
     );
   }
 
-  Widget _buildPastList() {
-    return Consumer<RideProvider>(
-      builder: (context, provider, _) {
-        if (provider.isLoadingRides) {
-          return const Center(
-            child: CircularProgressIndicator(color: AppTheme.accentBlue),
-          );
-        }
-
-        final rides = provider.myRides;
-
-        if (rides.isEmpty) {
-          return const Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('🚗', style: TextStyle(fontSize: 48)),
-                SizedBox(height: 12),
-                Text(
-                  'No past trips yet',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  'Book your first ride and it will appear here',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 13, color: Color(0xFF555555)),
-                ),
-              ],
-            ),
-          );
-        }
-
-        return RefreshIndicator(
-          color: AppTheme.accentBlue,
-          backgroundColor: AppTheme.surfaceColor,
-          onRefresh: () => context.read<RideProvider>().loadMyRides(),
-          child: ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: rides.length,
-            itemBuilder: (_, i) => Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _RideCard(ride: rides[i]),
-            ),
-          ),
-        );
-      },
+  void _openDetail(RideRequestRecord ride) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: false,
+      isScrollControlled: true,
+      builder: (sheetContext) => _TripDetailSheet(ride: ride),
     );
   }
+}
 
-  Widget _buildScheduledEmpty() {
-    return Center(
-      child: Column(
+/// One trip: id + status, the pickup → drop-off pair, tier and timestamp.
+class _TripRow extends StatelessWidget {
+  const _TripRow({required this.ride, required this.onTap});
+
+  final RideRequestRecord ride;
+  final VoidCallback onTap;
+
+  static String _dateLabel(DateTime? t) {
+    if (t == null) return '';
+    final local = t.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(local.year, local.month, local.day);
+    final diff = today.difference(day).inDays;
+    final time =
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+    if (diff == 0) return 'Today, $time';
+    if (diff == 1) return 'Yesterday, $time';
+    return '${local.day}/${local.month}/${local.year}, $time';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListRow(
+      onTap: onTap,
+      title: 'Ride #${ride.id}',
+      emphasised: !RideStages.isTerminal(ride.status),
+      subtitle:
+          '${ride.rideOptionName ?? 'Standard'} · '
+          '${_dateLabel(ride.requestTime)}',
+      leading: const PlaceMark(marker: PlaceMarker.square, size: 18),
+      trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text('🗓️', style: TextStyle(fontSize: 48)),
-          const SizedBox(height: 12),
-          const Text(
-            'No scheduled rides',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Book rides up to 7 days in advance',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 13,
-              color: Color(0xFF555555),
-            ),
-          ),
-          const SizedBox(height: 24),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.accentBlue,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () =>
-                Navigator.pushReplacementNamed(context, '/home'),
-            child: const Text('Schedule a ride'),
+          StatusBadge(status: ride.status),
+          const SizedBox(width: AppSpacing.xxs),
+          const Icon(
+            Icons.chevron_right,
+            size: 18,
+            color: AppColors.textSubtle,
           ),
         ],
       ),
@@ -234,159 +176,126 @@ class _TripsScreenState extends State<TripsScreen> {
   }
 }
 
-/// Adapter card that renders a [RideRequestRecord] in the trips list.
-class _RideCard extends StatelessWidget {
+/// Trip detail — the website's `TripDetail`: route pair, fare, H3 cell and the
+/// assigned vehicle for the live ride, plus Cancel while the backend still
+/// allows it.
+class _TripDetailSheet extends StatelessWidget {
+  const _TripDetailSheet({required this.ride});
+
   final RideRequestRecord ride;
-  const _RideCard({required this.ride});
 
-  Color _statusColor(String status) {
-    switch (status) {
-      case 'completed':
-        return Colors.green.shade400;
-      case 'cancelled':
-        return Colors.red.shade400;
-      case 'in_progress':
-        return AppTheme.accentBlue;
-      default:
-        return const Color(0xFFAAAAAA);
-    }
-  }
-
-  String _formatDate(DateTime? dt) {
-    if (dt == null) return 'Unknown date';
-    final local = dt.toLocal();
-    final now = DateTime.now();
-    // Compare calendar days, not 24h windows (avoids midnight bug where
-    // 11pm yesterday vs 1am today shows "Today").
-    final today = DateTime(now.year, now.month, now.day);
-    final day = DateTime(local.year, local.month, local.day);
-    final dayDiff = today.difference(day).inDays;
-    if (dayDiff == 0) return 'Today, ${_hm(local)}';
-    if (dayDiff == 1) return 'Yesterday, ${_hm(local)}';
-    if (dayDiff < 0) return '${_monthName(local.month)} ${local.day}, ${_hm(local)}';
-    return '${_monthName(local.month)} ${local.day}, ${_hm(local)}';
-  }
-
-  String _hm(DateTime dt) {
-    final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-    final m = dt.minute.toString().padLeft(2, '0');
-    final ampm = dt.hour < 12 ? 'AM' : 'PM';
-    return '$h:$m $ampm';
-  }
-
-  String _monthName(int m) {
-    const names = [
-      '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    return names[m];
-  }
+  static String _fullDate(DateTime? t) =>
+      t == null ? '—' : t.toLocal().toString().split('.').first;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppTheme.surfaceColor,
-        borderRadius: BorderRadius.circular(AppTheme.radiusLg),
+    final provider = context.watch<RideProvider>();
+    final isActiveRide = provider.currentRideId == ride.id;
+    final vehicle = isActiveRide ? provider.assignedVehicle : null;
+
+    return SheetPanel(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.gutter,
+        0,
+        AppSpacing.gutter,
+        AppSpacing.gutter,
       ),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Date + status
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                _formatDate(ride.requestTime),
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF888888),
-                ),
-              ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: _statusColor(ride.status).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  ride.status,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: _statusColor(ride.status),
-                  ),
-                ),
-              ),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SheetHeader(
+              eyebrow: 'Trip details',
+              title: 'Ride #${ride.id}',
+              subtitle: _fullDate(ride.requestTime),
+              trailing: StatusBadge(status: ride.status),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            RouteLeg(
+              pickup: ride.pickupLabel,
+              destination: ride.destinationLabel,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            InfoRow(
+              label: 'Ride tier',
+              value: ride.rideOptionName ?? 'Standard',
+            ),
+            if (ride.rideOptionPrice != null) ...[
+              const SizedBox(height: AppSpacing.xs),
+              InfoRow(label: 'Fare', value: ride.rideOptionPrice!),
             ],
-          ),
-          const SizedBox(height: 10),
-          // Route
-          Row(
-            children: [
-              Column(
-                children: [
-                  const Icon(Icons.radio_button_checked,
-                      color: AppTheme.accentBlue, size: 14),
-                  Container(
-                    width: 1,
-                    height: 20,
-                    color: const Color(0xFF444444),
-                  ),
-                  const Icon(Icons.location_on,
-                      color: Colors.red, size: 14),
-                ],
+            if (ride.h3Index != null) ...[
+              const SizedBox(height: AppSpacing.xs),
+              InfoRow(label: 'H3 cell', value: ride.h3Index!),
+            ],
+            if (ride.clusterId != null) ...[
+              const SizedBox(height: AppSpacing.xs),
+              InfoRow(label: 'Cluster', value: '${ride.clusterId}'),
+            ],
+            if (vehicle != null) ...[
+              const SizedBox(height: AppSpacing.xs),
+              InfoRow(label: 'Vehicle', value: vehicle.licensePlate),
+              const SizedBox(height: AppSpacing.xs),
+              InfoRow(label: 'Vehicle status', value: vehicle.status),
+              if (vehicle.lat != null && vehicle.lng != null) ...[
+                const SizedBox(height: AppSpacing.xs),
+                InfoRow(
+                  label: 'Position',
+                  value:
+                      '${vehicle.lat!.toStringAsFixed(4)}, '
+                      '${vehicle.lng!.toStringAsFixed(4)}',
+                ),
+              ],
+            ],
+            const SizedBox(height: AppSpacing.lg),
+            if (isActiveRide && !RideStages.isTerminal(ride.status))
+              AppButton(
+                label: 'Track live',
+                icon: Icons.navigation_outlined,
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.pushNamed(context, '/ride-confirm');
+                },
+              )
+            else
+              AppButton(
+                label: 'Close',
+                variant: AppButtonVariant.secondary,
+                onPressed: () => Navigator.pop(context),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      ride.pickupLabel,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w500,
+            if (RideStages.isCancellable(ride.status) && isActiveRide) ...[
+              const SizedBox(height: AppSpacing.xs),
+              AppButton(
+                label: 'Cancel ride',
+                variant: AppButtonVariant.secondary,
+                destructive: true,
+                onPressed: () async {
+                  final confirmed = await showAppConfirm(
+                    context,
+                    title: 'Cancel this ride?',
+                    message: 'Your driver assignment will be released.',
+                    confirmLabel: 'Cancel ride',
+                    destructive: true,
+                  );
+                  if (!confirmed || !context.mounted) return;
+                  final ok = await provider.cancelActiveRide();
+                  if (!context.mounted) return;
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        ok
+                            ? 'Ride cancelled'
+                            : (provider.error ?? 'Cannot cancel this ride'),
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 14),
-                    Text(
-                      ride.destinationLabel,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
+                  );
+                },
               ),
             ],
-          ),
-          // Ride option + ID footer
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                ride.rideOptionName != null
-                    ? '${ride.rideOptionName}${ride.rideOptionPrice != null ? ' · ${ride.rideOptionPrice}' : ''}'
-                    : 'Ride #${ride.id}',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF555555)),
-              ),
-              if (ride.clusterId != null)
-                Text(
-                  'Cluster ${ride.clusterId}',
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF555555)),
-                ),
-            ],
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

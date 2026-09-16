@@ -1,9 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../../providers/ride_provider.dart';
 import '../../services/api_client.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/ui_kit.dart';
 
+/// Post-ride feedback.
+///
+/// NOTE: this screen is app-only — the website has no rating step, and the
+/// backend currently exposes no feedback endpoint. The submit call is
+/// best-effort and a 404 never blocks the flow (see README.md).
 class RatingScreen extends StatefulWidget {
   const RatingScreen({super.key});
 
@@ -12,6 +19,15 @@ class RatingScreen extends StatefulWidget {
 }
 
 class _RatingScreenState extends State<RatingScreen> {
+  static const _tags = [
+    'Great driving',
+    'Very clean',
+    'On time',
+    'Friendly',
+    'Quiet ride',
+    'Safe driver',
+  ];
+
   int _stars = 0;
   final Set<String> _selectedTags = {};
   final TextEditingController _commentController = TextEditingController();
@@ -34,8 +50,6 @@ class _RatingScreenState extends State<RatingScreen> {
     final rideId = context.read<RideProvider>().currentRideId;
     try {
       if (rideId != null) {
-        // Best-effort: backend may not have a rating endpoint yet.
-        // A 404 must not block the success UX.
         try {
           await ApiClient.instance.postJson(
             '/rides/$rideId/rating',
@@ -46,12 +60,13 @@ class _RatingScreenState extends State<RatingScreen> {
             },
           );
         } on ApiException catch (e) {
+          // Best-effort only — an absent endpoint must not block the user.
           if (e.statusCode != 404) rethrow;
         }
       }
       if (!mounted) return;
       setState(() => _submitted = true);
-      await Future.delayed(const Duration(milliseconds: 1500));
+      await Future.delayed(const Duration(milliseconds: 1200));
       if (!mounted) return;
       context.read<RideProvider>().reset();
       Navigator.pushNamedAndRemoveUntil(context, '/home', (_) => false);
@@ -60,7 +75,7 @@ class _RatingScreenState extends State<RatingScreen> {
       setState(() {
         _submitError = e is ApiException
             ? e.message
-            : 'Could not submit rating. Please try again.';
+            : 'Could not submit feedback. Please try again.';
       });
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
@@ -70,219 +85,157 @@ class _RatingScreenState extends State<RatingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.scaffoldBg,
+      backgroundColor: AppColors.bg,
       body: _submitted ? _buildSuccessState() : _buildRatingForm(),
     );
   }
 
   Widget _buildSuccessState() {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              color: Colors.green.withValues(alpha: 0.2),
-              shape: BoxShape.circle,
-            ),
-            child: const Center(
-              child: Text(
-                '✓',
-                style: TextStyle(fontSize: 36, color: Colors.green),
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.gutter),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.border),
               ),
+              child: const Icon(Icons.check, size: 30, color: AppColors.paper),
             ),
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            'Thanks for rating!',
-            style: AppTheme.headingMedium,
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 8),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 32),
-            child: Text(
-              'Your feedback helps improve the community',
-              style: TextStyle(fontSize: 14, color: AppTheme.textTertiary),
+            const SizedBox(height: AppSpacing.lg),
+            const Text(
+              'Thanks for the feedback',
+              style: AppType.sectionTitle,
               textAlign: TextAlign.center,
             ),
-          ),
-        ],
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              'Heading back to home…',
+              style: AppType.small.copyWith(color: AppColors.textSecondary),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildRatingForm() {
-    final vehicle = context.watch<RideProvider>().assignedVehicle;
-    final subtitle = vehicle != null
-        ? 'Rate your ride · Vehicle #${vehicle.id}'
-        : 'Rate your ride with your driver';
+    final provider = context.watch<RideProvider>();
+    final vehicle = provider.assignedVehicle;
+    final ride = provider.activeRideRecord;
+
     return SafeArea(
       child: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Driver info header (generic — backend has no driver identity).
-              Padding(
-                padding: const EdgeInsets.only(top: 48, bottom: 24),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 64,
-                      height: 64,
-                      decoration: const BoxDecoration(
-                        color: AppTheme.accentBlue,
-                        shape: BoxShape.circle,
-                      ),
-                      alignment: Alignment.center,
-                      child: const Text(
-                        '🚗',
-                        style: TextStyle(fontSize: 28),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'How was your ride?',
-                      style: AppTheme.headingMedium,
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                          fontSize: 13, color: AppTheme.textTertiary),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
+        padding: const EdgeInsets.all(AppSpacing.gutter),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: AppSpacing.md),
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: AppColors.paper,
+                borderRadius: AppRadius.all(AppRadius.lg),
               ),
-
-              // Stars row
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [1, 2, 3, 4, 5].map((i) {
-                  return GestureDetector(
-                    onTap: _isSubmitting
-                        ? null
-                        : () => setState(() => _stars = i),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6),
-                      child: Text(
-                        i <= _stars ? '★' : '☆',
-                        style: TextStyle(
-                          fontSize: 40,
-                          color: i <= _stars
-                              ? const Color(0xFFFACC15)
-                              : const Color(0xFF333333),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
+              alignment: Alignment.center,
+              child: const Icon(
+                Icons.directions_car_outlined,
+                size: 28,
+                color: AppColors.ink,
               ),
-
-              // Tags and comment (shown only when stars > 0)
-              if (_stars > 0) ...[
-                const SizedBox(height: 20),
-                const Text('WHAT STOOD OUT?', style: AppTheme.labelUppercase),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    'Great driving',
-                    'Very clean',
-                    'On time',
-                    'Friendly',
-                    'Quiet ride',
-                    'Safe driver',
-                  ].map((t) {
-                    final selected = _selectedTags.contains(t);
-                    return GestureDetector(
+            ),
+            const SizedBox(height: AppSpacing.md),
+            const SheetHeader(
+              eyebrow: 'Ride complete',
+              title: 'How was your ride?',
+              subtitle: 'Your feedback helps improve shared transit.',
+            ),
+            if (ride != null) ...[
+              const SizedBox(height: AppSpacing.md),
+              RouteLeg(
+                pickup: ride.pickupLabel,
+                destination: ride.destinationLabel,
+              ),
+            ],
+            if (vehicle != null) ...[
+              const SizedBox(height: AppSpacing.md),
+              InfoRow(label: 'Vehicle', value: vehicle.licensePlate),
+            ],
+            const SizedBox(height: AppSpacing.xl),
+            StarRating(
+              value: _stars,
+              enabled: !_isSubmitting,
+              onChanged: (value) => setState(() => _stars = value),
+            ),
+            if (_stars > 0) ...[
+              const SizedBox(height: AppSpacing.xl),
+              const SectionLabel('What stood out?'),
+              const SizedBox(height: AppSpacing.sm),
+              Wrap(
+                spacing: AppSpacing.xs,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  for (final tag in _tags)
+                    AppChip(
+                      label: tag,
+                      selected: _selectedTags.contains(tag),
                       onTap: _isSubmitting
                           ? null
                           : () => setState(() {
-                                if (selected) {
-                                  _selectedTags.remove(t);
-                                } else {
-                                  _selectedTags.add(t);
-                                }
-                              }),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: selected ? Colors.white : Colors.transparent,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: selected
-                                ? Colors.white
-                                : const Color(0xFF2A2A2A),
-                          ),
-                        ),
-                        child: Text(
-                          t,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: selected
-                                ? Colors.black
-                                : const Color(0xFF888888),
-                          ),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 20),
-                TextField(
-                  controller: _commentController,
-                  maxLines: 3,
-                  enabled: !_isSubmitting,
-                  decoration: const InputDecoration(
-                    hintText: 'Add a comment (optional)',
-                  ),
-                ),
-              ],
-
-              if (_submitError != null) ...[
-                const SizedBox(height: 12),
-                Text(
-                  _submitError!,
-                  style: TextStyle(
-                      color: Colors.red.shade400, fontSize: 13),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-
-              const SizedBox(height: 32),
-
-              // Submit button
-              AnimatedOpacity(
-                opacity: _stars == 0 || _isSubmitting ? 0.5 : 1.0,
-                duration: const Duration(milliseconds: 200),
-                child: ElevatedButton(
-                  onPressed: (_stars == 0 || _isSubmitting)
-                      ? null
-                      : _handleSubmit,
-                  child: _isSubmitting
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.black,
-                          ),
-                        )
-                      : const Text('Submit rating'),
+                              if (!_selectedTags.remove(tag)) {
+                                _selectedTags.add(tag);
+                              }
+                            }),
+                    ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              const SectionLabel('Anything else?'),
+              const SizedBox(height: AppSpacing.sm),
+              TextField(
+                controller: _commentController,
+                maxLines: 3,
+                enabled: !_isSubmitting,
+                style: AppType.small.copyWith(color: AppColors.textPrimary),
+                decoration: const InputDecoration(
+                  hintText: 'Add a comment (optional)',
                 ),
               ),
-              const SizedBox(height: 32),
             ],
-          ),
+            if (_submitError != null) ...[
+              const SizedBox(height: AppSpacing.md),
+              ErrorBanner(message: _submitError!),
+            ],
+            const SizedBox(height: AppSpacing.xl),
+            AppButton(
+              label: 'Submit',
+              loading: _isSubmitting,
+              onPressed: _stars == 0 ? null : _handleSubmit,
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            AppButton(
+              label: 'Skip',
+              variant: AppButtonVariant.secondary,
+              onPressed: _isSubmitting
+                  ? null
+                  : () {
+                      context.read<RideProvider>().reset();
+                      Navigator.pushNamedAndRemoveUntil(
+                        context,
+                        '/home',
+                        (_) => false,
+                      );
+                    },
+            ),
+            const SizedBox(height: AppSpacing.xl),
+          ],
         ),
       ),
     );

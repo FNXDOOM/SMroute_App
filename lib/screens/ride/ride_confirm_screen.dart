@@ -1,476 +1,318 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../../models/ride_option.dart';
-import '../../providers/ride_provider.dart';
-import '../../theme/app_theme.dart';
-import '../../widgets/safety_features_grid.dart';
 
-class RideConfirmScreen extends StatelessWidget {
+import '../../models/ride_stage.dart';
+import '../../providers/ride_provider.dart';
+import '../../services/geocoding_service.dart';
+import '../../services/routing_service.dart';
+import '../../theme/app_theme.dart';
+import '../../widgets/live_map.dart';
+import '../../widgets/ui_kit.dart';
+
+/// Live ride tracking — the website's `TrackingView`, made map-first.
+///
+/// Full-bleed map (pickup, drop-off, route polyline, assigned vehicle) with the
+/// camera following the vehicle while the trip is in progress, exactly like the
+/// site's `followCamera`. Ride state, stage and cancel rules all come from the
+/// backend; nothing about progress is simulated in the UI.
+class RideConfirmScreen extends StatefulWidget {
   const RideConfirmScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final args = ModalRoute.of(context)?.settings.arguments;
-    final rideArg = args is RideOption ? args : null;
-
-    return Scaffold(
-      backgroundColor: AppTheme.scaffoldBg,
-      body: SafeArea(
-        child: Consumer<RideProvider>(
-          builder: (context, provider, _) {
-            // Prefer the provider's authoritative booking; fall back to the
-            // route argument (e.g. after process restore).
-            final ride = provider.selectedOption ?? rideArg;
-            switch (provider.stage) {
-              case BookingStage.matching:
-                return const _MatchingView();
-              case BookingStage.found:
-                return _DriverFoundView(ride: ride, arriving: false);
-              case BookingStage.arriving:
-                return _DriverFoundView(ride: ride, arriving: true);
-              case BookingStage.completed:
-                return _TerminalView(
-                  ride: ride,
-                  title: 'Ride completed',
-                  subtitle: 'Thanks for riding with SmartRoute.',
-                  isSuccess: true,
-                );
-              case BookingStage.cancelled:
-                return _TerminalView(
-                  ride: ride,
-                  title: 'Ride cancelled',
-                  subtitle: 'This ride was cancelled. No charge was made.',
-                  isSuccess: false,
-                );
-            }
-          },
-        ),
-      ),
-    );
-  }
+  State<RideConfirmScreen> createState() => _RideConfirmScreenState();
 }
 
-class _TerminalView extends StatelessWidget {
-  final RideOption? ride;
-  final String title;
-  final String subtitle;
-  final bool isSuccess;
-
-  const _TerminalView({
-    required this.ride,
-    required this.title,
-    required this.subtitle,
-    required this.isSuccess,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: (isSuccess ? Colors.green : Colors.red)
-                    .withValues(alpha: 0.15),
-                shape: BoxShape.circle,
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                isSuccess ? '✓' : '✕',
-                style: TextStyle(
-                  fontSize: 36,
-                  color: isSuccess ? Colors.green : Colors.red.shade400,
-                ),
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text(title,
-                style: AppTheme.headingMedium, textAlign: TextAlign.center),
-            const SizedBox(height: 8),
-            Text(subtitle,
-                style: const TextStyle(
-                    fontSize: 14, color: AppTheme.textTertiary),
-                textAlign: TextAlign.center),
-            if (ride != null) ...[
-              const SizedBox(height: 12),
-              Text('${ride!.name} · ${ride!.priceRange}',
-                  style: const TextStyle(
-                      fontSize: 13, color: Color(0xFFAAAAAA))),
-            ],
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: () => Navigator.pushNamedAndRemoveUntil(
-                context,
-                '/rating',
-                (_) => false,
-              ),
-              child: const Text('Continue to rating'),
-            ),
-            const SizedBox(height: 8),
-            TextButton(
-              onPressed: () => Navigator.pushNamedAndRemoveUntil(
-                context,
-                '/home',
-                (_) => false,
-              ),
-              child: const Text('Back to home',
-                  style: TextStyle(color: Color(0xFF888888))),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ── Matching stage ─────────────────────────────────────────────────────────
-
-class _MatchingView extends StatelessWidget {
-  const _MatchingView();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 80,
-            height: 80,
-            child: CircularProgressIndicator(
-              color: AppTheme.accentBlue,
-              strokeWidth: 3,
-            ),
-          ),
-          const SizedBox(height: 32),
-          Text(
-            'Finding your driver',
-            style: AppTheme.headingMedium,
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Matching you with the best nearby driver',
-            style: const TextStyle(
-              fontSize: 14,
-              color: AppTheme.textTertiary,
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Found / Arriving stage ─────────────────────────────────────────────────
-
-class _DriverFoundView extends StatelessWidget {
-  final RideOption? ride;
-  final bool arriving;
-
-  const _DriverFoundView({required this.ride, required this.arriving});
-
-  @override
-  Widget build(BuildContext context) {
-    final rideProvider = context.watch<RideProvider>();
-    final destination = rideProvider.destination ?? '';
-    final vehicle = rideProvider.assignedVehicle;
-
-    // Vehicle make/model has no backend equivalent (Vehicle only stores
-    // license_plate, capacity, status, lat/lng) — plate + status are real,
-    // the "Toyota Camry"-style description stays a placeholder until the
-    // backend adds a vehicle model/make field.
-    final vehicleLine = vehicle != null
-        ? vehicle.licensePlate
-        : (rideProvider.vehicleAssignmentTimedOut
-            ? 'Not available for this ride'
-            : 'Assigning a vehicle\u2026');
-    final plateLine = vehicle != null ? vehicle.status : '\u2014';
-
-    final details = [
-      _DetailRow(label: 'Vehicle', value: vehicleLine),
-      _DetailRow(label: 'Status', value: plateLine),
-      _DetailRow(label: 'Ride type', value: ride?.name ?? ''),
-      _DetailRow(label: 'Destination', value: destination),
-      _DetailRow(label: 'Estimated fare', value: ride?.priceRange ?? ''),
-      if (vehicle?.lat != null && vehicle?.lng != null)
-        _DetailRow(
-          label: 'Live position',
-          value:
-              '${vehicle!.lat!.toStringAsFixed(4)}, ${vehicle.lng!.toStringAsFixed(4)}',
-        ),
-    ];
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Status pill
-          Center(child: _StatusPill(ride: ride, arriving: arriving)),
-          const SizedBox(height: 20),
-
-          // Driver card
-          Container(
-            decoration: BoxDecoration(
-              color: AppTheme.surfaceColor,
-              borderRadius: BorderRadius.circular(AppTheme.radiusXl),
-            ),
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Top row: avatar + info + action buttons
-                Row(
-                  children: [
-                    // Avatar
-                    Container(
-                      width: 56,
-                      height: 56,
-                      decoration: const BoxDecoration(
-                        color: AppTheme.accentBlue,
-                        shape: BoxShape.circle,
-                      ),
-                      alignment: Alignment.center,
-                      child: const Text(
-                        '\ud83d\ude97',
-                        style: TextStyle(fontSize: 22),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    // Name + rating
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // No driver-identity field exists on the backend
-                          // Vehicle/User models yet, so this stays generic
-                          // rather than showing a fabricated name.
-                          const Text(
-                            'Your driver',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            vehicle != null
-                                ? 'Vehicle #${vehicle.id}'
-                                : 'Matching to a vehicle',
-                            style: const TextStyle(
-                              color: Color(0xFFAAAAAA),
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    // Action buttons (driver contact not yet supported
-                    // by backend — show feedback instead of dead buttons).
-                    Row(
-                      children: [
-                        _CircleIconButton(
-                          label: '\ud83d\udcac',
-                          tooltip: 'Chat with driver (coming soon)',
-                        ),
-                        const SizedBox(width: 8),
-                        _CircleIconButton(
-                          label: '\ud83d\udcde',
-                          tooltip: 'Call driver (coming soon)',
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 16),
-
-                // Detail rows
-                ...details.map((d) => d),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // Safety features
-          const SafetyFeaturesGrid(),
-
-          const SizedBox(height: 16),
-
-          // Done button — always keep a way back home even when /home
-          // isn't already in the stack (deep links, restores).
-          ElevatedButton(
-            onPressed: () => Navigator.pushNamedAndRemoveUntil(
-              context,
-              '/rating',
-              (_) => false,
-            ),
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Status pill ────────────────────────────────────────────────────────────
-
-class _StatusPill extends StatefulWidget {
-  final RideOption? ride;
-  final bool arriving;
-
-  const _StatusPill({required this.ride, required this.arriving});
-
-  @override
-  State<_StatusPill> createState() => _StatusPillState();
-}
-
-class _StatusPillState extends State<_StatusPill>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse;
-  late final Animation<double> _opacity;
+class _RideConfirmScreenState extends State<RideConfirmScreen> {
+  RouteEstimate? _route;
+  String _loadedFor = '';
 
   @override
   void initState() {
     super.initState();
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat(reverse: true);
-    _opacity = Tween<double>(begin: 0.3, end: 1.0).animate(_pulse);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadRoute());
   }
 
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
+  /// Reuses the estimate the booking panel already fetched; only asks the
+  /// backend again when the panel has none (e.g. restored session).
+  Future<void> _loadRoute() async {
+    final provider = context.read<RideProvider>();
+    final ride = provider.activeRideRecord;
+    if (ride == null) return;
+    final key =
+        '${ride.id}:${ride.pickupLat},${ride.pickupLng}:'
+        '${ride.destLat},${ride.destLng}:${provider.trafficEnabled}';
+    if (key == _loadedFor) return;
+    _loadedFor = key;
 
-  @override
-  Widget build(BuildContext context) {
-    final arriving = widget.arriving;
-
-    final bgColor = arriving
-        ? Colors.green.withValues(alpha: 0.15)
-        : AppTheme.accentBlue.withValues(alpha: 0.15);
-    final borderColor = arriving
-        ? Colors.green.withValues(alpha: 0.3)
-        : AppTheme.accentBlue.withValues(alpha: 0.3);
-    final textColor =
-        arriving ? Colors.green.shade400 : AppTheme.accentBlue;
-    final label = arriving
-        ? 'Driver arriving in ~1 min'
-        : 'Driver on the way · ${widget.ride?.eta ?? ''}';
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: borderColor),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Pulsing dot
-          FadeTransition(
-            opacity: _opacity,
-            child: Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: textColor,
-                shape: BoxShape.circle,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            label,
-            style: TextStyle(color: textColor, fontSize: 13),
-          ),
-        ],
-      ),
+    final existing = provider.routeEstimate;
+    if (existing != null) {
+      setState(() => _route = existing);
+      return;
+    }
+    final estimate = await RoutingService.route(
+      from: GeoPoint(ride.pickupLat, ride.pickupLng),
+      to: GeoPoint(ride.destLat, ride.destLng),
+      traffic: provider.trafficEnabled,
     );
+    if (!mounted) return;
+    setState(() => _route = estimate);
   }
-}
 
-// ── Detail row ─────────────────────────────────────────────────────────────
+  Future<void> _cancel() async {
+    final confirmed = await showAppConfirm(
+      context,
+      title: 'Cancel this ride?',
+      message: 'Your driver assignment will be released.',
+      confirmLabel: 'Cancel ride',
+      destructive: true,
+    );
+    if (!confirmed || !mounted) return;
+    final provider = context.read<RideProvider>();
+    final ok = await provider.cancelActiveRide();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? 'Ride cancelled'
+                : (provider.error ?? 'Cannot cancel this ride'),
+          ),
+        ),
+      );
+  }
 
-class _DetailRow extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _DetailRow({required this.label, required this.value});
+  void _home() =>
+      Navigator.pushNamedAndRemoveUntil(context, '/home', (_) => false);
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Divider(color: AppTheme.borderColor),
-        Row(
-          children: [
-            Text(
-              label,
-              style: const TextStyle(fontSize: 13, color: Color(0xFF888888)),
-            ),
-            const Spacer(),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 160),
-              child: Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
+    final provider = context.watch<RideProvider>();
+    final ride = provider.activeRideRecord;
+    final status = ride?.status ?? '';
+    final terminal = RideStages.isTerminal(status);
+
+    if (provider.currentRideId == null || ride == null) {
+      return Scaffold(
+        backgroundColor: AppColors.bg,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.gutter),
+            child: Column(
+              children: [
+                PageHeader(
+                  title: 'Live tracking',
+                  description: 'No active ride right now',
+                  onBack: () => Navigator.maybePop(context),
                 ),
-                textAlign: TextAlign.right,
-                overflow: TextOverflow.ellipsis,
+                const SizedBox(height: AppSpacing.lg),
+                EmptyState(
+                  icon: Icons.navigation_outlined,
+                  title: 'No active ride',
+                  hint: 'Start a booking from Home to track it live here.',
+                  action: AppButton(label: 'Back home', onPressed: _home),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final pickup = GeoPoint(ride.pickupLat, ride.pickupLng);
+    final destination = GeoPoint(ride.destLat, ride.destLng);
+    final route = _route?.geometry ?? const <GeoPoint>[];
+    // Narrow the vehicle's nullable coordinates once, so the tree below can't
+    // drift out of sync with `hasVehicle`.
+    final vehicle = provider.assignedVehicle;
+    final vehicleLat = vehicle?.lat;
+    final vehicleLng = vehicle?.lng;
+    final hasVehicle = vehicleLat != null && vehicleLng != null;
+    final vehiclePosition = hasVehicle
+        ? '${vehicleLat.toStringAsFixed(4)}, ${vehicleLng.toStringAsFixed(4)}'
+        : null;
+    final following = status == 'in_progress' && hasVehicle;
+
+    return Scaffold(
+      backgroundColor: AppColors.bg,
+      body: MapFirstScaffold(
+        map: LiveMap(
+          fullBleed: true,
+          pickup: pickup,
+          destination: destination,
+          route: route,
+          vehicles: hasVehicle
+              ? [
+                  MapVehicle(
+                    id: '${vehicle?.id}',
+                    lat: vehicleLat,
+                    lng: vehicleLng,
+                    label: vehicle?.licensePlate ?? '',
+                  ),
+                ]
+              : const [],
+          initialCenter: pickup,
+          attribution: false,
+          cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),
+          followPoint: following ? GeoPoint(vehicleLat, vehicleLng) : null,
+        ),
+        topBar: Row(
+          children: [
+            IconSquareButton(
+              icon: Icons.arrow_back,
+              tooltip: 'Back',
+              onTap: () => Navigator.maybePop(context),
+            ),
+            const SizedBox(width: AppSpacing.xs),
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.sm + 2,
+                  vertical: AppSpacing.xs,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.bg,
+                  borderRadius: AppRadius.all(AppRadius.md),
+                  border: Border.all(color: AppColors.border),
+                  boxShadow: AppShadows.sm,
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: AppColors.paper,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.xs),
+                    Expanded(
+                      child: Text(
+                        RideStages.labelOf(status),
+                        style: AppType.smallStrong,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (hasVehicle)
+                      Text(
+                        vehicle?.licensePlate ?? '',
+                        style: AppType.caption.copyWith(
+                          color: AppColors.textSecondary,
+                          fontFeatures: AppType.tabular,
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ],
         ),
-      ],
-    );
-  }
-}
-
-// ── Circle icon button ─────────────────────────────────────────────────────
-
-class _CircleIconButton extends StatelessWidget {
-  final String label;
-  final String tooltip;
-
-  const _CircleIconButton({required this.label, this.tooltip = 'Coming soon'});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(tooltip),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 2),
+        sheet: Align(
+          alignment: Alignment.bottomCenter,
+          // Bounded + scrollable so the panel can never overflow a short
+          // screen — the site's panel scrolls, it doesn't clip.
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.66,
+            ),
+            child: SheetPanel(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SheetHeader(
+                      eyebrow: 'Live ride',
+                      title: 'Ride #${ride.id}',
+                      subtitle:
+                          '${ride.rideOptionName ?? 'Standard'} · '
+                          '${RideStages.labelOf(status)}',
+                      trailing: StatusBadge(status: status),
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    RideStageStepper(
+                      stages: RideStages.keys,
+                      labels: RideStages.labels,
+                      currentIndex: RideStages.indexOf(status),
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    RouteLeg(
+                      pickup: ride.pickupLabel,
+                      destination: ride.destinationLabel,
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    InfoRow(
+                      icon: Icons.directions_car_outlined,
+                      label: 'Vehicle',
+                      value: vehicle != null
+                          ? vehicle.licensePlate
+                          : (provider.vehicleAssignmentTimedOut
+                                ? 'Not available'
+                                : 'Assigning…'),
+                    ),
+                    if (_route != null) ...[
+                      const SizedBox(height: AppSpacing.xs),
+                      InfoRow(
+                        icon: Icons.route_outlined,
+                        label: 'Route estimate',
+                        value:
+                            '${_route!.distanceKm.toStringAsFixed(1)} km · '
+                            '${_route!.durationMinutes} min',
+                      ),
+                    ],
+                    if (vehiclePosition != null) ...[
+                      const SizedBox(height: AppSpacing.xs),
+                      InfoRow(
+                        icon: Icons.my_location,
+                        label: 'Vehicle position',
+                        value: vehiclePosition,
+                      ),
+                    ],
+                    const SizedBox(height: AppSpacing.lg),
+                    if (terminal) ...[
+                      if (status == 'completed')
+                        AppButton(
+                          label: 'Rate your ride',
+                          icon: Icons.star_outline,
+                          onPressed: () => Navigator.pushNamedAndRemoveUntil(
+                            context,
+                            '/rating',
+                            (_) => false,
+                          ),
+                        )
+                      else
+                        AppButton(label: 'Book another ride', onPressed: _home),
+                      const SizedBox(height: AppSpacing.xs),
+                      AppButton(
+                        label: 'Back to home',
+                        variant: AppButtonVariant.secondary,
+                        onPressed: _home,
+                      ),
+                    ] else ...[
+                      AppButton(
+                        label: 'Back to home',
+                        variant: AppButtonVariant.secondary,
+                        onPressed: () => Navigator.maybePop(context),
+                      ),
+                      if (RideStages.isCancellable(status)) ...[
+                        const SizedBox(height: AppSpacing.xs),
+                        AppButton(
+                          label: 'Cancel ride',
+                          variant: AppButtonVariant.secondary,
+                          destructive: true,
+                          onPressed: _cancel,
+                        ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
-      ),
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: const BoxDecoration(
-          color: Color(0xFF252525),
-          shape: BoxShape.circle,
-        ),
-        alignment: Alignment.center,
-        child: Text(label, style: const TextStyle(fontSize: 18)),
       ),
     );
   }
