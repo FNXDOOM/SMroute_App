@@ -7,7 +7,6 @@ class AppNotification {
   final String body;
   final String time;
   bool read;
-  final String icon;
 
   AppNotification({
     required this.id,
@@ -16,7 +15,6 @@ class AppNotification {
     required this.body,
     required this.time,
     required this.read,
-    required this.icon,
   });
 
   factory AppNotification.fromJson(Map<String, dynamic> json) {
@@ -35,7 +33,6 @@ class AppNotification {
       body: (json['message'] ?? '').toString(),
       time: _timeLabel(createdAt),
       read: json['is_read'] == true,
-      icon: _iconFor(type),
     );
   }
 
@@ -50,19 +47,6 @@ class AppNotification {
       return NotificationType.promo;
     }
     return NotificationType.system;
-  }
-
-  static String _iconFor(NotificationType type) {
-    switch (type) {
-      case NotificationType.ride:
-        return '🚗';
-      case NotificationType.promo:
-        return '🎉';
-      case NotificationType.payment:
-        return '💳';
-      case NotificationType.system:
-        return '🛟';
-    }
   }
 
   static String _timeLabel(DateTime? createdAt) {

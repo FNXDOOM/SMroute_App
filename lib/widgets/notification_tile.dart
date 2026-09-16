@@ -1,111 +1,125 @@
 import 'package:flutter/material.dart';
+
 import '../models/notification_model.dart';
 import '../theme/app_theme.dart';
 
+/// Notification row in the website's language: hairline card, neutral
+/// surface, line icon tile, muted body, white unread dot. No accent-tinted
+/// borders, no emoji, no purple.
 class NotificationTile extends StatelessWidget {
-  final AppNotification notification;
-  const NotificationTile({super.key, required this.notification});
+  const NotificationTile({
+    super.key,
+    required this.notification,
+    this.onTap,
+  });
 
-  Color get _iconBgColor {
-    switch (notification.type) {
+  final AppNotification notification;
+  final VoidCallback? onTap;
+
+  static IconData _iconFor(NotificationType type) {
+    switch (type) {
       case NotificationType.ride:
-        return AppTheme.accentBlue.withValues(alpha: 0.2);
+        return Icons.directions_car_outlined;
       case NotificationType.promo:
-        return const Color(0xFF7B3FF2).withValues(alpha: 0.2);
+        return Icons.local_offer_outlined;
       case NotificationType.payment:
-        return Colors.green.withValues(alpha: 0.2);
+        return Icons.payments_outlined;
       case NotificationType.system:
-        return const Color(0xFF333333);
+        return Icons.info_outline;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: notification.read ? AppTheme.readNotifBg : AppTheme.surfaceColor,
-        borderRadius: BorderRadius.circular(AppTheme.radiusXl),
-        border: Border.all(
-          color: notification.read
-              ? Colors.transparent
-              : AppTheme.accentBlue.withValues(alpha: 0.2),
-          width: 1,
-        ),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Icon circle
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: _iconBgColor,
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              notification.icon,
-              style: const TextStyle(fontSize: 18),
+    final isRead = notification.read;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: AppRadius.card,
+        child: Container(
+          padding: const EdgeInsets.all(AppSpacing.sm + 2),
+          decoration: BoxDecoration(
+            color: isRead ? AppColors.readSurface : AppColors.surface,
+            borderRadius: AppRadius.card,
+            border: Border.all(
+              color: isRead ? Colors.transparent : AppColors.border,
             ),
           ),
-          const SizedBox(width: 12),
-          // Content
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Title row
-                Row(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceAlt,
+                  borderRadius: AppRadius.all(AppRadius.md),
+                ),
+                child: Icon(
+                  _iconFor(notification.type),
+                  size: 18,
+                  color: isRead ? AppColors.textSubtle : AppColors.paper,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text(
-                        notification.title,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: notification.read
-                              ? const Color(0xFFCCCCCC)
-                              : Colors.white,
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            notification.title,
+                            style: AppType.smallStrong.copyWith(
+                              color: isRead
+                                  ? AppColors.textSecondary
+                                  : AppColors.paper,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                        maxLines: 2,
+                        if (!isRead) ...[
+                          const SizedBox(width: AppSpacing.xs),
+                          Container(
+                            margin: const EdgeInsets.only(top: 5),
+                            width: 7,
+                            height: 7,
+                            decoration: const BoxDecoration(
+                              color: AppColors.paper,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: AppSpacing.xxs),
+                    Text(
+                      notification.body,
+                      style: AppType.caption.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: AppSpacing.xxs + 2),
+                    Text(
+                      notification.time,
+                      style: AppType.caption.copyWith(
+                        color: AppColors.textSubtle,
+                        fontSize: 12,
                       ),
                     ),
-                    if (!notification.read) ...[
-                      const SizedBox(width: 4),
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: AppTheme.accentBlue,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ],
                   ],
                 ),
-                const SizedBox(height: 4),
-                // Body
-                Text(
-                  notification.body,
-                  style: AppTheme.bodySmall,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 6),
-                // Time
-                Text(
-                  notification.time,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF444444),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

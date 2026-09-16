@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../../providers/notification_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/notification_tile.dart';
+import '../../widgets/ui_kit.dart';
 
+/// Inbox — the website's `InboxView`: title + unread count, "Mark all read"
+/// while anything is unread, flat notification rows, and an intentional empty
+/// state. Filters work on real notifications only.
 class InboxScreen extends StatefulWidget {
   const InboxScreen({super.key});
 
@@ -12,157 +17,140 @@ class InboxScreen extends StatefulWidget {
 }
 
 class _InboxScreenState extends State<InboxScreen> {
+  static const _filters = [
+    NotifFilter.all,
+    NotifFilter.rides,
+    NotifFilter.payments,
+    NotifFilter.promos,
+  ];
+  static const _filterLabels = ['All', 'Rides', 'Payments', 'Offers'];
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<NotificationProvider>().loadNotifications();
+      if (mounted) context.read<NotificationProvider>().loadNotifications();
     });
   }
 
+  Future<void> _refresh() => context
+      .read<NotificationProvider>()
+      .loadNotifications(connectRealtime: false);
+
   @override
   Widget build(BuildContext context) {
+    final provider = context.watch<NotificationProvider>();
+    final notifications = provider.filteredNotifications;
+    final loading = provider.isLoading && !provider.isLoaded;
+    final unread = provider.unreadCount;
+
     return Scaffold(
-      backgroundColor: AppTheme.scaffoldBg,
+      backgroundColor: AppColors.bg,
       body: SafeArea(
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // ── Header ──────────────────────────────────────────────────────
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // Back button
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Color(0xFF888888)),
-                    onPressed: () =>
-                        Navigator.pushReplacementNamed(context, '/home'),
-                  ),
-                  // Title
-                  const Text(
-                    'Notifications',
-                    style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  // Mark all read / spacer
-                  Consumer<NotificationProvider>(
-                    builder: (context, provider, _) {
-                      if (provider.unreadCount > 0) {
-                        return TextButton(
-                          onPressed: () =>
-                              context.read<NotificationProvider>().markAllRead(),
-                          child: const Text(
-                            'Mark all read',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: AppTheme.accentBlue,
-                            ),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.gutter,
+                AppSpacing.md,
+                AppSpacing.gutter,
+                AppSpacing.sm,
+              ),
+              child: PageHeader(
+                title: 'Notifications',
+                description: provider.isLoaded && unread > 0
+                    ? '$unread unread'
+                    : 'Ride updates, receipts and announcements',
+                onBack: () => Navigator.pushReplacementNamed(context, '/home'),
+                backLabel: 'Home',
+                actions: unread > 0
+                    ? TextButton.icon(
+                        onPressed: provider.markAllRead,
+                        icon: const Icon(Icons.done_all, size: 16),
+                        label: const Text('Mark all read'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.textSecondary,
+                          minimumSize: const Size(0, 36),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.xs,
                           ),
-                        );
-                      }
-                      return const SizedBox(width: 80);
-                    },
-                  ),
-                ],
+                        ),
+                      )
+                    : null,
               ),
             ),
-
-            // ── Filter tabs ─────────────────────────────────────────────────
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    (NotifFilter.all, 'All'),
-                    (NotifFilter.rides, 'Rides'),
-                    (NotifFilter.promos, 'Promos'),
-                    (NotifFilter.payments, 'Payments'),
-                  ].map((entry) {
-                    final filter = entry.$1;
-                    final label = entry.$2;
-                    return Consumer<NotificationProvider>(
-                      builder: (context, provider, _) {
-                        final isActive = provider.activeFilter == filter;
-                        return GestureDetector(
-                          onTap: () => context
-                              .read<NotificationProvider>()
-                              .setFilter(filter),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 8),
-                            margin: const EdgeInsets.only(right: 8),
-                            decoration: BoxDecoration(
-                              color: isActive
-                                  ? Colors.white
-                                  : AppTheme.surfaceColor,
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(
-                              label,
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: isActive
-                                    ? Colors.black
-                                    : const Color(0xFF888888),
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    );
-                  }).toList(),
-                ),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.gutter,
+                0,
+                AppSpacing.gutter,
+                AppSpacing.sm,
+              ),
+              child: SegmentedTabs(
+                tabs: _filterLabels,
+                activeIndex: _filters.indexOf(provider.activeFilter),
+                onChanged: (i) =>
+                    context.read<NotificationProvider>().setFilter(_filters[i]),
               ),
             ),
-
-            // ── Notification list ────────────────────────────────────────────
             Expanded(
-              child: Consumer<NotificationProvider>(
-                builder: (context, provider, _) {
-                  if (provider.isLoading && !provider.isLoaded) {
-                    return const Center(
-                      child: CircularProgressIndicator(color: AppTheme.accentBlue),
-                    );
-                  }
-                  final filtered = provider.filteredNotifications;
-                  if (filtered.isEmpty) {
-                    return const Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            '🔔',
-                            style: TextStyle(fontSize: 48),
-                          ),
-                          SizedBox(height: 12),
-                          Text(
-                            'No notifications here yet',
-                            style: TextStyle(
-                              color: Color(0xFF555555),
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
+              child: loading
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: AppSpacing.gutter,
                       ),
-                    );
-                  }
-                  return ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    itemCount: filtered.length,
-                    itemBuilder: (_, i) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: NotificationTile(notification: filtered[i]),
+                      child: SkeletonRows(count: 5, height: 76),
+                    )
+                  : RefreshIndicator(
+                      color: AppColors.paper,
+                      backgroundColor: AppColors.surface,
+                      onRefresh: _refresh,
+                      child: notifications.isEmpty
+                          ? ListView(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpacing.gutter,
+                                vertical: AppSpacing.sm,
+                              ),
+                              children: [
+                                EmptyState(
+                                  icon: Icons.inbox_outlined,
+                                  title: provider.error != null
+                                      ? 'Unable to load notifications'
+                                      : "You're all caught up",
+                                  hint:
+                                      provider.error ??
+                                      'Ride updates, dispatch events and '
+                                          'driver approvals will appear here.',
+                                ),
+                              ],
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.fromLTRB(
+                                AppSpacing.gutter,
+                                0,
+                                AppSpacing.gutter,
+                                AppSpacing.xl,
+                              ),
+                              itemCount: notifications.length,
+                              itemBuilder: (_, i) {
+                                final notification = notifications[i];
+                                return Padding(
+                                  padding: const EdgeInsets.only(
+                                    bottom: AppSpacing.xs,
+                                  ),
+                                  child: NotificationTile(
+                                    notification: notification,
+                                    onTap: notification.read
+                                        ? null
+                                        : () => context
+                                              .read<NotificationProvider>()
+                                              .markRead(notification.id),
+                                  ),
+                                );
+                              },
+                            ),
                     ),
-                  );
-                },
-              ),
             ),
           ],
         ),

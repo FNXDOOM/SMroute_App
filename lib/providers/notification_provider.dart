@@ -61,7 +61,10 @@ class NotificationProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final response = await _api.getJson('/notifications/?limit=100');
+      final response = await _api.getJson(
+        '/notifications/',
+        queryParameters: {'limit': 100},
+      );
       if (response is! Map<String, dynamic>) {
         throw const FormatException('Invalid notifications response');
       }
