@@ -7,11 +7,31 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/assigned_vehicle.dart';
 import '../models/ride_option.dart';
 import '../models/ride_request_record.dart';
+import '../models/ride_stage.dart';
 import '../services/api_client.dart';
 import '../services/geocoding_service.dart';
+import '../services/razorpay_service.dart';
 import '../services/routing_service.dart';
 
 enum BookingStage { matching, found, arriving, completed, cancelled }
+
+/// Payment state machine for the active ride's fare (website's
+/// RazorpayPayment phases: idle → creating → paying → verifying → paid |
+/// failed). Success is only ever derived from `POST /payments/verify`.
+enum PaymentPhase {
+  idle,
+  creating,
+  paying,
+  verifying,
+  paid,
+  failed,
+}
+
+/// A checkout started from the app.
+class PaymentFlowException implements Exception {
+  PaymentFlowException(this.message);
+  final String message;
+}
 
 class RideProvider extends ChangeNotifier {
   final ApiClient _api = ApiClient.instance;
@@ -56,10 +76,79 @@ class RideProvider extends ChangeNotifier {
   Timer? _trackingReconnectTimer;
   bool _disposed = false;
 
-  // Status polling fallback (Bug fix): the backend only pushes ride-status
-  // changes as WebSocket notifications; if that socket is down, the stage
-  // machine would freeze on "Finding your driver". This timer re-reads the
-  // authoritative status from GET /rides/{id} while a ride is active.
+  // ── Fare payment (website's RazorpayPayment on the active-ride card) ────
+  PaymentPhase _paymentPhase = PaymentPhase.idle;
+  String? _paymentError;
+  PaymentPhase get paymentPhase => _paymentPhase;
+  String? get paymentError => _paymentError;
+  bool get isPaying =>
+      _paymentPhase == PaymentPhase.creating ||
+      _paymentPhase == PaymentPhase.paying ||
+      _paymentPhase == PaymentPhase.verifying;
+
+  /// Full website checkout flow: create-order → native checkout → verify.
+  /// Returns true only after the backend confirms the payment signature.
+  Future<bool> payActiveRideFare() async {
+    final rideId = _currentRideId;
+    final ride = activeRideRecord;
+    if (rideId == null || ride == null || isPaying) return false;
+    if (_paymentPhase == PaymentPhase.paid) return true;
+
+    _paymentError = null;
+    _paymentPhase = PaymentPhase.creating;
+    notifyListeners();
+
+    try {
+      final checkout = await _api.postJson(
+        '/payments/create-order',
+        body: <String, dynamic>{
+          'ride_request_id': rideId,
+          'ride_option_id': ride.rideOptionId,
+          'ride_option_name': ride.rideOptionName ?? 'ride fare',
+        },
+      );
+      if (checkout is! Map<String, dynamic>) {
+        throw PaymentFlowException('Unexpected payment response from server.');
+      }
+
+      if (_disposed) return false;
+      _paymentPhase = PaymentPhase.paying;
+      notifyListeners();
+
+      // Opens native Checkout; completes only after /payments/verify.
+      final verified = await RazorpayService.pay(checkout: checkout);
+      if (_disposed) return verified;
+
+      _paymentPhase = verified ? PaymentPhase.paid : PaymentPhase.failed;
+      if (!verified) {
+        _paymentError = 'The payment could not be verified. If you were '
+            'charged, it will settle automatically.';
+      }
+      notifyListeners();
+      return verified;
+    } on ApiException catch (error) {
+      _paymentPhase = PaymentPhase.failed;
+      _paymentError = error.message;
+      notifyListeners();
+      return false;
+    } on PaymentFlowException catch (error) {
+      _paymentPhase = PaymentPhase.failed;
+      _paymentError = error.message;
+      notifyListeners();
+      return false;
+    } catch (_) {
+      _paymentPhase = PaymentPhase.failed;
+      _paymentError = 'Could not complete the payment. Please try again.';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  void resetPaymentState() {
+    _paymentPhase = PaymentPhase.idle;
+    _paymentError = null;
+    notifyListeners();
+  }
   Timer? _statusPollTimer;
   bool _isPollingStatus = false;
   String? _lastPolledBackendStatus;
@@ -242,7 +331,19 @@ class RideProvider extends ChangeNotifier {
     return null;
   }
 
-  void handleRideStatusUpdate(String newStatus) {
+  /// Applies one ride-status transition from the backend (WebSocket
+  /// notification payload). [rideId] identifies which ride changed — the
+  /// backend sends one notification per status change for ANY of the user's
+  /// rides, so an event for another (e.g. older) ride must not leak into the
+  /// active one. The ride record the UI reads is updated too, so every
+  /// screen re-renders from the same authoritative status immediately —
+  /// not just after the next poll (website parity: the site's 4 s poll sets
+  /// `activeRide` directly).
+  void handleRideStatusUpdate(String newStatus, int? rideId) {
+    final tracked = _currentRideId;
+    if (rideId != null && tracked != null && rideId != tracked) {
+      return; // Another ride's transition — the active ride is unaffected.
+    }
     switch (newStatus) {
       case 'assigned':
         _stage = BookingStage.found;
@@ -265,7 +366,39 @@ class RideProvider extends ChangeNotifier {
       default:
         return;
     }
+    _lastPolledBackendStatus = newStatus;
+    _applyStatusToRideRecord(newStatus);
+    // Keep the poll running while a ride is active: the WS is a hint, the
+    // poll is the recovery path (e.g. socket dropped mid-ride).
+    if (_currentRideId != null && !isRideTerminal) {
+      _startStatusPolling();
+    } else {
+      _stopStatusPolling();
+    }
     notifyListeners();
+  }
+
+  /// Rewrites the active ride's status in [_myRides] so the UI (which reads
+  /// [activeRideRecord]) reflects the transition without a network round-trip.
+  @visibleForTesting
+  void debugSetRides(List<RideRequestRecord> rides, {int? currentRideId}) {
+    _myRides
+      ..clear()
+      ..addAll(rides);
+    if (currentRideId != null) _currentRideId = currentRideId;
+  }
+
+  /// Test seam for the post-[loadMyRides] restore step.
+  @visibleForTesting
+  void restoreFromRidesForTest() => _adoptRestorableRide();
+
+  void _applyStatusToRideRecord(String newStatus) {
+    final id = _currentRideId;
+    if (id == null) return;
+    final index = _myRides.indexWhere((r) => r.id == id);
+    if (index == -1) return;
+    if (_myRides[index].status == newStatus) return;
+    _myRides[index] = _myRides[index].copyWithStatus(newStatus);
   }
 
   Future<bool> confirmBooking() async {
@@ -404,6 +537,11 @@ class RideProvider extends ChangeNotifier {
       _myRides
         ..clear()
         ..addAll(items);
+      // Website parity: the site restores any in-flight ride on load. If a
+      // non-terminal ride exists but isn't the tracked one (fresh app start,
+      // or the tracked ride went terminal), adopt the newest non-terminal
+      // one and resume its pollers so status updates keep flowing.
+      _adoptRestorableRide();
       // Silent loads still change data — listeners (Trips badge/history)
       // must rebuild, just without the loading spinner.
       notifyListeners();
@@ -420,7 +558,39 @@ class RideProvider extends ChangeNotifier {
     }
   }
 
+  /// Website parity: `PassengerView` re-activates an in-flight ride from
+  /// history. After a fresh app start (nothing tracked yet) the newest
+  /// non-terminal ride from the last 24 h is adopted and its pollers resume,
+  /// so status updates keep flowing. Older abandoned rides are left alone —
+  /// the site likewise never auto-revives stale requests.
+  void _adoptRestorableRide() {
+    if (_currentRideId != null) return;
+    RideRequestRecord? candidate;
+    final cutoff = DateTime.now().toUtc().subtract(const Duration(hours: 24));
+    for (final ride in _myRides) {
+      if (RideStages.isTerminal(ride.status)) continue;
+      if (ride.requestTime != null && ride.requestTime!.isBefore(cutoff)) {
+        continue;
+      }
+      if (candidate == null || ride.id > candidate.id) candidate = ride;
+    }
+    if (candidate == null) return;
+
+    _currentRideId = candidate.id;
+    _stage = _stageForStatus(candidate.status) ?? BookingStage.matching;
+    _lastPolledBackendStatus = candidate.status;
+    _vehiclePollAttempts = 0;
+    _vehicleAssignmentTimedOut = false;
+    _isFetchingVehicle = false;
+    _trackingReconnectAttempts = 0;
+    _startStatusPolling();
+    _startVehiclePolling();
+  }
+
   void reset() {
+    RazorpayService.reset();
+    _paymentPhase = PaymentPhase.idle;
+    _paymentError = null;
     _destination = null;
     _destinationPoint = null;
     _isResolvingDestination = false;
@@ -460,6 +630,9 @@ class RideProvider extends ChangeNotifier {
   void clearForLogout() {
     reset();
     _myRides.clear();
+    RazorpayService.reset();
+    _paymentPhase = PaymentPhase.idle;
+    _paymentError = null;
   }
 
   // ── Status polling fallback ─────────────────────────────────────────────
@@ -491,6 +664,15 @@ class RideProvider extends ChangeNotifier {
             // Advance the stage machine from authoritative server state.
             _stage = stageFor;
             if (isRideTerminal) _stopVehicleTracking(keepAttempts: true);
+          }
+          if (statusChanged) {
+            // The UI reads the ride record, not this private stage — write
+            // the authoritative status through (site: setActiveRide(r)).
+            // The WS path notifies at the end of handleRideStatusUpdate; the
+            // poll has no other notify, so it must notify here or the work
+            // is invisible to the UI until something else rebuilds.
+            _applyStatusToRideRecord(backendStatus);
+            notifyListeners();
           }
           // A vehicle may appear while we poll (backend jobs assign routes
           // asynchronously). If the dedicated vehicle poller had given up,
@@ -567,6 +749,16 @@ class RideProvider extends ChangeNotifier {
   Future<void> _fetchAssignedVehicle() async {
     final rideId = _currentRideId;
     if (rideId == null || _isFetchingVehicle) return;
+    // Backend contract: once a DRIVER manually assigns a ride,
+    // PATCH /rides/{id}/status unlinks virtual_stop_id, so
+    // GET /rides/{id}/vehicle stays null forever. Keep polling only while
+    // the ride is still pre-assignment (pending/clustered — the auto-dispatch
+    // pipeline path); afterwards a null is final, not a retry signal.
+    if (_stage != BookingStage.matching) {
+      _vehiclePollTimer?.cancel();
+      _vehiclePollTimer = null;
+      return;
+    }
     _isFetchingVehicle = true;
     try {
       final response = await _api.getJson('/rides/$rideId/vehicle');
@@ -615,7 +807,7 @@ class RideProvider extends ChangeNotifier {
     if (vehicle == null) return;
 
     unawaited(() async {
-      final token = await _api.token;
+      final token = await _api.liveToken();
       if (token == null || token.isEmpty) return;
       final wsUrl = _api.baseUrl
           .replaceFirst('https://', 'wss://')
@@ -681,7 +873,7 @@ class RideProvider extends ChangeNotifier {
       () {
         if (_disposed || isRideTerminal) return;
         unawaited(() async {
-          final token = await _api.token;
+          final token = await _api.liveToken();
           if (token == null || token.isEmpty) return;
           _connectVehicleTracking();
         }());

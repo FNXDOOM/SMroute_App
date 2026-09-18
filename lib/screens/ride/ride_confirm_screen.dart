@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/ride_stage.dart';
+import '../../providers/payment_provider.dart';
 import '../../providers/ride_provider.dart';
 import '../../services/geocoding_service.dart';
 import '../../services/routing_service.dart';
@@ -85,6 +86,26 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
 
   void _home() =>
       Navigator.pushNamedAndRemoveUntil(context, '/home', (_) => false);
+
+  Future<void> _payFare(RideProvider provider) async {
+    final ok = await provider.payActiveRideFare();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? 'Payment successful — your fare has been received.'
+                : (provider.paymentError ?? 'Payment not completed.'),
+          ),
+        ),
+      );
+    if (ok) {
+      // Refresh payment history so the new fare shows in Payment.
+      context.read<PaymentProvider>().loadPaymentData();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -247,11 +268,19 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                     InfoRow(
                       icon: Icons.directions_car_outlined,
                       label: 'Vehicle',
+                      // Once assigned, a null vehicle is final (manual accept
+                      // unlinks the vehicle record server-side).
                       value: vehicle != null
                           ? vehicle.licensePlate
-                          : (provider.vehicleAssignmentTimedOut
-                                ? 'Not available'
-                                : 'Assigning…'),
+                          : (const {
+                                  'assigned',
+                                  'arriving',
+                                  'in_progress',
+                                }.contains(status)
+                                    ? 'Driver assigned'
+                                    : (provider.vehicleAssignmentTimedOut
+                                          ? 'Not available'
+                                          : 'Assigning…')),
                     ),
                     if (_route != null) ...[
                       const SizedBox(height: AppSpacing.xs),
@@ -273,7 +302,28 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                     ],
                     const SizedBox(height: AppSpacing.lg),
                     if (terminal) ...[
-                      if (status == 'completed')
+                      if (status == 'completed') ...[
+                        // Website parity: fare payment lives on the ride card
+                        // (RazorpayPayment) — success only after the backend
+                        // verifies the payment signature.
+                        AppButton(
+                          label: provider.paymentPhase == PaymentPhase.paid
+                              ? 'Fare paid — thank you'
+                              : 'Pay fare · Razorpay',
+                          icon: provider.paymentPhase == PaymentPhase.paid
+                              ? Icons.check_circle_outline
+                              : Icons.payment_outlined,
+                          loading: provider.isPaying,
+                          onPressed: provider.isPaying ||
+                                  provider.paymentPhase == PaymentPhase.paid
+                              ? null
+                              : () => _payFare(provider),
+                        ),
+                        if (provider.paymentError != null) ...[
+                          const SizedBox(height: AppSpacing.xs),
+                          ErrorBanner(message: provider.paymentError!),
+                        ],
+                        const SizedBox(height: AppSpacing.xs),
                         AppButton(
                           label: 'Rate your ride',
                           icon: Icons.star_outline,
@@ -282,8 +332,8 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                             '/rating',
                             (_) => false,
                           ),
-                        )
-                      else
+                        ),
+                      ] else
                         AppButton(label: 'Book another ride', onPressed: _home),
                       const SizedBox(height: AppSpacing.xs),
                       AppButton(

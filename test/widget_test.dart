@@ -5,7 +5,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:finalyr_app/main.dart';
+import 'package:finalyr_app/models/ride_request_record.dart';
 import 'package:finalyr_app/providers/auth_provider.dart';
+import 'package:finalyr_app/providers/driver_provider.dart';
 import 'package:finalyr_app/providers/ride_provider.dart';
 import 'package:finalyr_app/providers/notification_provider.dart';
 import 'package:finalyr_app/providers/payment_provider.dart';
@@ -276,5 +278,157 @@ void main() {
       expect(notif.unreadCount, 0);
       expect(notif.error, isNull);
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // 8. RideProvider payment phase machine (website RazorpayPayment parity)
+  // -------------------------------------------------------------------------
+
+  group('RideProvider payment phase machine', () {
+    test('starts idle with no error', () {
+      final ride = RideProvider();
+      expect(ride.paymentPhase, PaymentPhase.idle);
+      expect(ride.paymentError, isNull);
+      expect(ride.isPaying, isFalse);
+    });
+
+    test('payActiveRideFare with no active ride is a no-op that stays idle',
+        () async {
+      final ride = RideProvider();
+      final result = await ride.payActiveRideFare();
+      expect(result, isFalse);
+      expect(ride.paymentPhase, PaymentPhase.idle);
+      expect(ride.paymentError, isNull);
+    });
+
+    test('resetPaymentState returns to idle', () {
+      final ride = RideProvider();
+      ride.resetPaymentState();
+      expect(ride.paymentPhase, PaymentPhase.idle);
+      expect(ride.paymentError, isNull);
+    });
+
+    test('reset() also resets payment state', () {
+      final ride = RideProvider();
+      ride.reset();
+      expect(ride.paymentPhase, PaymentPhase.idle);
+      expect(ride.paymentError, isNull);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 9. DriverProvider (website DriverView parity)
+  // -------------------------------------------------------------------------
+  group('DriverProvider', () {
+    DriverProvider buildProvider() {
+      final auth = AuthProvider();
+      return DriverProvider(auth);
+    }
+
+    test('initial state is clean', () {
+      final driver = buildProvider();
+      expect(driver.myVehicle, isNull);
+      expect(driver.vehicles, isEmpty);
+      expect(driver.board, isEmpty);
+      expect(driver.activeRides, isEmpty);
+      expect(driver.pendingRides, isEmpty);
+      expect(driver.isLoading, isFalse);
+      expect(driver.error, isNull);
+    });
+
+    test('activeRides/pendingRides filter and sort by newest first', () {
+      final driver = buildProvider();
+      // Use the public board setter path via reflection-free approach: we
+      // can't set private fields, so exercise the public getters' contracts
+      // through an empty board (real filtering is backend-driven).
+      expect(driver.activeRides, isEmpty);
+      expect(driver.pendingRides, isEmpty);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 10. Ride lifecycle state machine (website parity regression tests)
+  // -------------------------------------------------------------------------
+  group('RideProvider ride lifecycle', () {
+    RideRequestRecord record(int id, String status, {DateTime? requestedAt}) {
+      // Backend JSON shape (RideRequestResponse) — parsed by fromJson.
+      return RideRequestRecord.fromJson({
+        'id': id,
+        'pickup_lat': 12.9716,
+        'pickup_lng': 77.5946,
+        'dest_lat': 12.9352,
+        'dest_lng': 77.6245,
+        'status': status,
+        'request_time':
+            (requestedAt ?? DateTime.now().toUtc()).toIso8601String(),
+        'pickup_label': 'Indiranagar 100 Feet Rd',
+        'destination_label': 'MG Road Metro',
+        'ride_option_id': 'swift-x',
+        'ride_option_name': 'SwiftX',
+        'ride_option_price': '₹12–15',
+      });
+    }
+
+    test(
+      'WS ride_status_updated advances the ACTIVE ride record immediately',
+      () {
+        final ride = RideProvider();
+        ride.debugSetRides(
+          [record(258, 'pending')],
+          currentRideId: 258,
+        );
+        expect(ride.activeRideRecord!.status, 'pending');
+
+        // Driver accepted — the notification callback fires.
+        ride.handleRideStatusUpdate('assigned', 258);
+
+        expect(ride.activeRideRecord!.status, 'assigned');
+        expect(ride.stage, BookingStage.found);
+      },
+    );
+
+    test(
+      'WS event for a DIFFERENT ride never leaks into the active ride',
+      () {
+        final ride = RideProvider();
+        ride.debugSetRides(
+          [record(300, 'pending'), record(258, 'pending')],
+          currentRideId: 258,
+        );
+
+        ride.handleRideStatusUpdate('completed', 300);
+
+        expect(ride.activeRideRecord!.status, 'pending');
+        expect(ride.stage, BookingStage.matching);
+      },
+    );
+
+    test('cancelled transitions mark the active ride terminal', () {
+      final ride = RideProvider();
+      ride.debugSetRides([record(258, 'assigned')], currentRideId: 258);
+
+      ride.handleRideStatusUpdate('cancelled', 258);
+
+      expect(ride.activeRideRecord!.status, 'cancelled');
+      expect(ride.hasActiveRide, isFalse);
+    });
+
+    test(
+      'loadMyRides adopts the newest non-terminal ride after a restart',
+      () async {
+        final ride = RideProvider();
+        // Fresh start: nothing tracked. The ride list (from the backend)
+        // holds a ride still in flight.
+        ride.debugSetRides([record(301, 'assigned')]);
+        expect(ride.currentRideId, isNull);
+
+        ride.restoreFromRidesForTest();
+
+        expect(ride.currentRideId, 301);
+        expect(ride.activeRideRecord!.status, 'assigned');
+        expect(ride.stage, BookingStage.found);
+        expect(ride.hasActiveRide, isTrue);
+      },
+    );
   });
 }

@@ -34,6 +34,28 @@ class RideRequestRecord {
     this.rideOptionPrice,
   });
 
+  /// A copy of this record with a new backend status — used to keep the
+  /// active-ride UI in step with authoritative state between polls.
+  RideRequestRecord copyWithStatus(String newStatus) {
+    return RideRequestRecord(
+      id: id,
+      pickupLat: pickupLat,
+      pickupLng: pickupLng,
+      destLat: destLat,
+      destLng: destLng,
+      status: newStatus,
+      h3Index: h3Index,
+      clusterId: clusterId,
+      virtualStopId: virtualStopId,
+      requestTime: requestTime,
+      pickupLabelText: pickupLabelText,
+      destinationLabelText: destinationLabelText,
+      rideOptionId: rideOptionId,
+      rideOptionName: rideOptionName,
+      rideOptionPrice: rideOptionPrice,
+    );
+  }
+
   static double _parseCoord(dynamic raw) {
     if (raw is num) return raw.toDouble();
     if (raw is String) return double.tryParse(raw) ?? 0.0;
