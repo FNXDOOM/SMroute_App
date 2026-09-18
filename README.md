@@ -81,19 +81,34 @@ Home (pickup + destination + tier)  →  POST /rides/request
 
 **Not implemented (honest gaps)**
 
-- **Razorpay checkout** — the website pays a fare from the active-ride card via
-  `POST /payments/create-order` → checkout → `POST /payments/verify`. The app
-  only *reads* payment history; there is no on-device checkout yet.
 - **Post-ride feedback** — `POST /rides/{id}/rating` does not exist on the
   backend. The screen is best-effort: a 404 is swallowed and the flow completes,
   so the rating is currently discarded.
-- **Driver and admin portals** — the website has role-gated `DriverView`,
-  `AdminView` and a driver application flow; this app is passenger-only.
-- **Ride tiers on the map style** — the website renders MapLibre from
-  `GET /maps/stadia/style.json`, which is auth-protected and whose tile URLs
-  need the bearer token, so MapLibre's native tile fetches cannot carry it. The
-  app uses a keyless dark CARTO raster style that matches the site's neutral map
-  language instead (no map key ships in the binary).
+- **Admin portal** — the website's role-gated `AdminView` (driver verification,
+  jobs, analytics, demand heatmap) has no app equivalent.
+- **Vector map styling** — the website renders MapLibre from
+  `GET /maps/stadia/style.json` and repaints that vector style dark in the
+  browser. `flutter_map` renders raster only, so the app requests Stadia's
+  raster sibling of the same style through the backend proxy (see §Maps).
+  Same basemap, but the app can't reproduce the site's per-layer vector paint
+  rules (e.g. its custom road colour) — it gets the pre-rendered dark raster
+  instead.
+
+**Recently added (site parity)**
+
+- **Razorpay checkout** — the active-ride sheet now carries the website's
+  `RazorpayPayment` flow: `POST /payments/create-order` → native Razorpay
+  Checkout (`razorpay_flutter`) → `POST /payments/verify`. Success shows only
+  after the backend confirms the signature; the Key Secret never reaches the
+  app.
+- **Driver apply** — `POST /auth/driver/apply` with license plate (the site's
+  DriverApplyView), reachable from Profile for passengers.
+- **Driver console** (`/driver`, role-gated) — the site's DriverView on
+  mobile: vehicle auto-selection by `driver_user_id` (with picker fallback),
+  on/off duty via `PATCH /vehicle/{id}`, GPS position push via
+  `POST /tracking/vehicles/{id}/location`, dispatch board via `GET /rides/`,
+  and accept → arriving → in_progress → completed via `PATCH /rides/{id}/status`
+  (completing returns the vehicle to idle, like the site).
 
 **Deliberately absent** — no mock fallbacks anywhere: a failing backend produces
 an error or empty state, never fabricated data. Wallet balances, stored cards
@@ -109,7 +124,7 @@ endpoints and the website has no such features.
 | UI | Flutter (Material 3, dark theme), custom design system |
 | State | `provider` (`ChangeNotifier`), no second store |
 | Navigation | Named routes with an auth guard in `onGenerateRoute` |
-| Map | `flutter_map` ^8.3 (CARTO dark raster tiles, keyless) |
+| Map | `flutter_map` ^8.3 (Stadia `alidade_smooth_dark` via the backend proxy; keyless CARTO fallback) |
 | Location | `geolocator` ^14 (runtime permission, 12 s high-accuracy read) |
 | Networking | `http` via `ApiClient` (base URL, JWT header, 15 s timeout) |
 | Realtime | `web_socket_channel` → `/tracking/ws` and `/notifications/ws` |
@@ -160,8 +175,8 @@ The API origin and Clerk key are build-time values, supplied either by
 **Never present in the app** (backend-only, `backend/.env` or Secrets Manager):
 `LOCAL_JWT_SECRET`, `CLERK_SECRET_KEY`, `DATABASE_URL`, `STADIA_API_KEY`,
 `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`. The Razorpay **Key ID** is
-public by design and would only arrive in a `POST /payments/create-order`
-response — the app does not need it until checkout is added.
+public by design and arrives only inside a `POST /payments/create-order`
+response — the app needs no key material to run checkout.
 
 **Backend requirements for website-account sign-in:** `CLERK_ALLOW_NATIVE_CLIENTS=true`
 plus a reachable Clerk issuer. Without it the backend rejects native Clerk
@@ -175,7 +190,9 @@ tokens and users fall back to email sign-in.
 Auth:            Authorization: Bearer <jwt>, Content-Type: application/json
 Error format:    {"detail": "<message>"} (FastAPI); 429 adds Retry-After
 Token:           local JWT (default 7 days, no refresh — re-login on expiry)
-                 or Clerk session JWT (~60 s — re-minted on every app boot)
+                 or Clerk session JWT (~60 s — resolved live before every
+                 request, plus one refresh + retry if the backend reports one
+                 expired mid-flight)
 WebSocket auth:  ?token=<jwt> query param (backend's native-mobile fallback)
 Pagination:      notifications limit=1..100; rides/payments capped server-side
 Rate limits:     /auth/login 15/5min · /auth/register 5/h · /rides/request 20/min
@@ -219,7 +236,7 @@ clear message but the server stays authoritative.
 ```text
 Register / Login → POST /auth/register | /auth/login → {access_token, user}
   → token in SharedPreferences (smartroute_api_token)
-  → Authorization: Bearer <jwt> on every request (ApiClient.headers)
+  → Authorization: Bearer <jwt> on every request (ApiClient.liveToken)
 
 Website account (its password lives in Clerk, not in the backend DB)
   → POST /auth/login returns 401 by design
@@ -229,8 +246,15 @@ Website account (its password lives in Clerk, not in the backend DB)
   → same ApiClient storage; backend verifies it via Clerk JWKS (RS256)
   → get_or_create_user_from_payload provisions/links the database user
 
-App restart → refresh the Clerk JWT first when one exists (Clerk tokens are
-  ~60 s lived, so a stored one is always stale), then GET /auth/me
+Token resolution (Clerk sessions only)
+  → every request asks ApiClient.liveToken() for the CURRENT token
+    (ClerkAuthState.sessionToken(), installed via setTokenRefresher);
+    concurrent refreshes are coalesced into a single mint
+  → 401 → refresh once → retry the request once. Never loops: if the
+    refresh returns the SAME token the request is not retried
+  → backend-native JWTs have no refresher, so a 401 stays a re-login
+
+App restart → same path, then GET /auth/me
   → 200: restored · 401/403: token cleared → Login
   → network/5xx: session kept and retried next launch (no forced logout)
 
@@ -275,6 +299,40 @@ so every screen shows the same step for the same backend status.
 
 ---
 
+## Maps
+
+The basemap is resolved once per session by `lib/services/map_tiles.dart`:
+
+1. **Preferred** — the website's own Stadia basemap, dark variant
+   (`alidade_smooth_dark`), fetched through the backend's authenticated proxy:
+   `GET /maps/stadia/resource/tiles/alidade_smooth_dark/{z}/{x}/{y}.png` with the
+   session bearer token. The API key stays server-side, so no map key is compiled
+   into the app. flutter_map fetches tiles from Dart, which means — unlike
+   MapLibre's native fetches — it *can* attach the `Authorization` header.
+2. **Fallback** — only when the proxy can't serve tiles at all (no token yet,
+   offline, or the backend's Stadia key unset): keyless CARTO `dark_all`,
+   brightened by a colour matrix because its own road casing is near-black and
+   disappears against our canvas.
+
+A single probe tile decides between them (8 s timeout, response must be a real
+PNG), so the app never renders a half-broken tile layer.
+
+**Why this matters.** The previous CARTO-only basemap measured *median luma 9*,
+with ~80 % of pixels between `#030303` and `#0D0D0D` and roads at
+`#111111`–`#222222` — against our own `#000000` canvas. The tiles were loading
+perfectly and the map was still effectively invisible. Stadia's dark raster
+measures median luma ~52 with roads at `#333333`–`#4F4F4F`, so the map reads as a
+map. On-device the map area went from 9 → 56 median luma.
+
+**Known backend issue** — `GET /maps/stadia/resource/...@2x.png` answers **500**
+sporadically (13 of roughly 30 tiles in one measured session, each failure a
+black hole in the map), while Stadia serves the identical URL with 200 (6/6
+repeats). The app therefore requests plain 256 px tiles and retries 5xx twice via
+`RetryClient`; a full session after that change logged **zero** tile failures.
+Fixing it server-side would restore `@2x` sharpness on high-DPI phones.
+
+---
+
 ## Project structure
 
 ```text
@@ -288,8 +346,11 @@ lib/
 ├── providers/                   # auth, ride (booking/polling/tracking),
 │                                # notification, payment
 ├── services/                    # api_client, geocoding, location, routing,
+│                                # map_tiles (basemap resolution),
+│                                # razorpay (checkout), driver (vehicle/board)
 │                                # clerk_auth
-├── screens/                     # auth, home, ride, trips, inbox, payment, profile
+├── screens/                     # auth, home, ride, trips, inbox, payment,
+│                                # profile, driver (console + apply)
 └── widgets/                     # ui_kit + live_map, bottom_nav_bar,
                                  # ride_option_card, notification_tile
 test/widget_test.dart            # widget + provider tests (36)
@@ -335,7 +396,9 @@ strings /tmp/apkchk/lib/arm64-v8a/libapp.so | grep -c "api.fnxdoom.in"
   the only stored credential (`shared_preferences` — use
   `flutter_secure_storage` for a hardened production build).
 - Tokens are never logged. Dev request logging prints method/path/status/
-  duration only and compiles out of release builds (`kDebugMode`).
+  duration, the token's remaining lifetime (decoded from the `exp` claim only)
+  and whether the request was retried — never the token itself or the
+  Authorization header — and compiles out of release builds (`kDebugMode`).
 - Payment trust boundary respected: all amounts are computed server-side; the
   app never computes or posts an amount.
 - 401/403 clears the session; transient network failures do not log anyone out.
@@ -349,6 +412,12 @@ strings /tmp/apkchk/lib/arm64-v8a/libapp.so | grep -c "api.fnxdoom.in"
   masquerade as "logged out".
 - 429 responses surface the backend's `Retry-After` through
   `ApiException.retryAfterSeconds`; the app does not auto-retry.
+- Session tokens are resolved per request, so a short-lived Clerk JWT (~60 s)
+  can't go stale mid-session. A 401 is answered with one fresh-token retry; if
+  the refresh returns the same token the 401 is surfaced instead of looping.
+- The map's authenticated tile proxy and both WebSockets (notifications,
+  tracking) also read the current token at connect/request time, so they can't
+  sit on an expired one.
 - Vehicle-assignment polling caps at ~30 attempts (~2 min) — dispatch is
   job-driven and may never assign a vehicle for a given ride, so the UI shows a
   clear "still assigning" state instead of spinning forever.
@@ -366,7 +435,8 @@ strings /tmp/apkchk/lib/arm64-v8a/libapp.so | grep -c "api.fnxdoom.in"
 | `Gradle build failed` | `flutter clean && flutter pub get` |
 | Requests fail on a physical phone | You are probably pointing at `127.0.0.1`; rebuild with your LAN IP or the production origin |
 | "Sign-in did not complete" | The Clerk key is missing from the build config, or the backend lacks `CLERK_ALLOW_NATIVE_CLIENTS=true` |
-| Blank map | Tile host unreachable from the device; the map falls back to the app's neutral surface colour |
+| Map is completely black | Tiles can't be fetched *and* the fallback is dark. Check `adb logcat \| grep "HTTP request failed"` — 401 means the token wasn't accepted by `/maps/stadia/resource`, 404/500 means the backend proxy (see §Maps) |
+| Map loads but looks empty/flat | You are on the brightened CARTO fallback: the app couldn't reach the backend tile proxy. Confirm the token is valid and the backend's `STADIA_API_KEY` is set |
 
 ## License
 
