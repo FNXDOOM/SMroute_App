@@ -6,11 +6,14 @@ import 'config/app_env.dart';
 import 'services/clerk_auth_service.dart';
 import 'theme/app_theme.dart';
 import 'providers/auth_provider.dart';
+import 'providers/driver_provider.dart';
 import 'providers/ride_provider.dart';
 import 'providers/notification_provider.dart';
 import 'providers/payment_provider.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/auth/register_screen.dart';
+import 'screens/driver/driver_apply_screen.dart';
+import 'screens/driver/driver_console_screen.dart';
 import 'screens/ride/ride_confirm_screen.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/ride/ride_select_screen.dart';
@@ -59,6 +62,17 @@ class SmartRouteApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => RideProvider()),
+        ChangeNotifierProxyProvider<AuthProvider, DriverProvider>(
+          create: (context) =>
+              DriverProvider(context.read<AuthProvider>()),
+          update: (_, auth, driver) {
+            if (driver == null) {
+              return DriverProvider(auth);
+            }
+            // Rebuild the provider's view of the user on login/logout.
+            return driver..refreshAuth(auth);
+          },
+        ),
         ChangeNotifierProxyProvider<RideProvider, NotificationProvider>(
           create: (_) => NotificationProvider(),
           update: (_, rideProvider, notifProvider) {
@@ -78,14 +92,17 @@ class SmartRouteApp extends StatelessWidget {
             initialRoute: '/',
             // When Clerk is configured, wrap the navigator in ClerkAuth
             // (required for the SDK's context lookups). It reuses
-            // the eagerly-created auth state — no second instance. When
-            // Clerk is not configured, builder stays null (plain app) and
+            // the eagerly-created auth state — no second instance.
+            //
+            // Pass `authState` ONLY: ClerkAuth asserts exactly one of
+            // `config`/`authState` (config == null) != (authState == null), and
+            // the state created in main() already carries the config
+            // (ClerkAuth.config falls back to authState!.config). Passing both
+            // tripped that assert and showed the red error screen on launch.
+            // When Clerk is not configured, builder stays null (plain app) and
             // Clerk-backed sign-in is disabled (AppEnv.hasClerk == false).
             builder: AppEnv.hasClerk && ClerkAuthService.state != null
                 ? (navContext, child) => ClerkAuth(
-                    config: ClerkAuthConfig(
-                      publishableKey: AppEnv.clerkPublishableKey,
-                    ),
                     authState: ClerkAuthService.state,
                     child: child ?? const SizedBox.shrink(),
                   )
@@ -130,6 +147,10 @@ class SmartRouteApp extends StatelessWidget {
                       return const PaymentScreen();
                     case '/profile':
                       return const ProfileScreen();
+                    case '/driver':
+                      return const DriverConsoleScreen();
+                    case '/driver-apply':
+                      return const DriverApplyScreen();
                     default:
                       return const _BootstrapScreen();
                   }

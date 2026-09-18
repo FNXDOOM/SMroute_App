@@ -136,7 +136,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               PageHeader(
                 title: 'Profile',
                 description: 'How you appear to drivers and dispatch',
-                onBack: () => Navigator.pushReplacementNamed(context, '/home'),
+                onBack: () => Navigator.maybePop(context),
                 backLabel: 'Home',
               ),
               const SizedBox(height: AppSpacing.lg),
@@ -226,6 +226,47 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       onPressed: _save,
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              AppCard(
+                padding: EdgeInsets.zero,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.lg,
+                  ),
+                  child: ListRow(
+                    title: user.role == 'driver'
+                        ? 'Driver console'
+                        : 'Drive with SmartRoute',
+                    subtitle: user.role == 'driver'
+                        ? 'Duty, dispatch board and ride updates'
+                        : 'Apply to drive and earn on SmartRoute',
+                    leading: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceAlt,
+                        borderRadius: AppRadius.all(AppRadius.md),
+                      ),
+                      child: Icon(
+                        user.role == 'driver'
+                            ? Icons.local_shipping_outlined
+                            : Icons.directions_car_outlined,
+                        size: 18,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right,
+                      size: 18,
+                      color: AppColors.textSubtle,
+                    ),
+                    onTap: () => Navigator.pushNamed(
+                      context,
+                      user.role == 'driver' ? '/driver' : '/driver-apply',
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: AppSpacing.md),
