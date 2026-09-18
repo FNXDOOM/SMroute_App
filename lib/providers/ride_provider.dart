@@ -8,9 +8,11 @@ import '../models/assigned_vehicle.dart';
 import '../models/ride_option.dart';
 import '../models/ride_request_record.dart';
 import '../models/ride_stage.dart';
+import '../models/vehicle_animation.dart';
 import '../services/api_client.dart';
 import '../services/geocoding_service.dart';
 import '../services/razorpay_service.dart';
+import '../services/ride_vehicle_animation.dart';
 import '../services/routing_service.dart';
 
 enum BookingStage { matching, found, arriving, completed, cancelled }
@@ -56,6 +58,10 @@ class RideProvider extends ChangeNotifier {
   RouteEstimate? _routeEstimate;
   bool _isLoadingRoute = false;
   String _routeKey = '';
+
+  /// Ride whose pickup → destination geometry has already been requested for an
+  /// active ride, so the status poll does not re-request it on every tick.
+  String? _activeRideRouteKey;
   BookingStage _stage = BookingStage.matching;
   bool _isBooking = false;
   bool _isLoadingRides = false;
@@ -197,6 +203,38 @@ class RideProvider extends ChangeNotifier {
   bool get vehicleAssignmentTimedOut => _vehicleAssignmentTimedOut;
   int? get currentRideId => _currentRideId;
 
+  /// The vehicle the map should draw, or null when none should be shown: none
+  /// assigned yet, or the ride is over.
+  ///
+  /// A finished ride must stop feeding the map its last-known vehicle record —
+  /// the backend never clears it, and the animation has already left the car at
+  /// the destination, so redrawing that stale coordinate would drag it back.
+  AssignedVehicle? get trackableVehicle =>
+      isRideTerminal ? null : _assignedVehicle;
+
+  /// The moving-vehicle animation for the active ride, derived from the ride
+  /// status by [RideVehicleAnimation]. Null when no vehicle should be drawn —
+  /// nothing assigned yet, or the ride has finished.
+  ///
+  /// The backend status stays the single source of truth: this only projects it
+  /// onto the map, so there is no second state machine to keep in step.
+  VehicleAnimation? get vehicleAnimation {
+    final ride = activeRideRecord;
+    if (ride == null) return null;
+    return RideVehicleAnimation.forRide(
+      status: ride.status,
+      pickup: GeoPoint(ride.pickupLat, ride.pickupLng),
+      destination: GeoPoint(ride.destLat, ride.destLng),
+      routeGeometry: _routeEstimate?.geometry ?? const <GeoPoint>[],
+      vehicle: _assignedVehicle,
+    );
+  }
+
+  /// True while the trip itself is under way (pickup → drop-off). This is the
+  /// one stage whose camera follows the vehicle, matching the site's
+  /// `followCamera`.
+  bool get isInTransit => activeRideRecord?.status == 'in_progress';
+
   /// Terminal states stop vehicle polling/tracking; UI can show receipt.
   bool get isRideTerminal =>
       _stage == BookingStage.completed || _stage == BookingStage.cancelled;
@@ -308,6 +346,30 @@ class RideProvider extends ChangeNotifier {
     _isLoadingRoute = false;
   }
 
+  /// Loads the pickup → destination geometry for an active ride whose
+  /// booking-time estimate is gone — the provider outlives a single booking and
+  /// a restored ride never ran through `confirmBooking`. The site does the same
+  /// for its active ride; without it the in-transit animation would degrade to a
+  /// straight line. Uses the ride record's own coordinates, so it is independent
+  /// of whatever pickup/destination the booking form currently holds.
+  Future<void> ensureActiveRideRoute() async {
+    final ride = activeRideRecord;
+    if (ride == null || _routeEstimate != null) return;
+
+    final key = 'ride:${ride.id}';
+    if (key == _activeRideRouteKey) return;
+    _activeRideRouteKey = key;
+
+    final estimate = await RoutingService.route(
+      from: GeoPoint(ride.pickupLat, ride.pickupLng),
+      to: GeoPoint(ride.destLat, ride.destLng),
+      traffic: _trafficEnabled,
+    );
+    if (estimate == null || _routeEstimate != null) return;
+    _routeEstimate = estimate;
+    notifyListeners();
+  }
+
   void selectOption(RideOption r) {
     _selectedOption = r;
     _error = null;
@@ -391,6 +453,10 @@ class RideProvider extends ChangeNotifier {
   /// Test seam for the post-[loadMyRides] restore step.
   @visibleForTesting
   void restoreFromRidesForTest() => _adoptRestorableRide();
+
+  /// Test seam for the vehicle the backend assigned to the active ride.
+  @visibleForTesting
+  void debugSetVehicle(AssignedVehicle? vehicle) => _assignedVehicle = vehicle;
 
   void _applyStatusToRideRecord(String newStatus) {
     final id = _currentRideId;
@@ -652,6 +718,9 @@ class RideProvider extends ChangeNotifier {
         return;
       }
       _isPollingStatus = true;
+      // The in-transit animation follows the road route; make sure we have it
+      // (no-op once loaded). Runs on the existing 5 s status tick.
+      unawaited(ensureActiveRideRoute());
       try {
         final response =
             await _api.getJson('/rides/$_currentRideId');

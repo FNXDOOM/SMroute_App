@@ -249,7 +249,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final destPoint =
         provider.destinationPoint ??
         (active == null ? null : GeoPoint(active.destLat, active.destLng));
-    final vehicle = provider.assignedVehicle;
+    // Only drawn while the ride is live (see RideProvider.trackableVehicle).
+    final vehicle = provider.trackableVehicle;
     final hasVehicle = vehicle?.lat != null && vehicle?.lng != null;
 
     return PopScope<bool>(
@@ -295,6 +296,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ]
                       : const [],
+                  // Drives the car from the ride status (see RideVehicleAnimation)
+                  // — without this the map only ever shows a vehicle the backend
+                  // has a record for, which is usually none of them.
+                  vehicleAnimation: provider.vehicleAnimation,
                   initialCenter: pickupPoint ?? GeocodingService.defaultPickup,
                   attribution: false,
                   cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),

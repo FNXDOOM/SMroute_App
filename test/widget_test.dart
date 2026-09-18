@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:finalyr_app/main.dart';
+import 'package:finalyr_app/models/assigned_vehicle.dart';
 import 'package:finalyr_app/models/ride_request_record.dart';
 import 'package:finalyr_app/providers/auth_provider.dart';
 import 'package:finalyr_app/providers/driver_provider.dart';
@@ -430,5 +431,65 @@ void main() {
         expect(ride.hasActiveRide, isTrue);
       },
     );
+
+    // ── Derived map animation (RideVehicleAnimation) ────────────────────────
+
+    test('vehicleAnimation appears only once a driver is assigned', () {
+      final ride = RideProvider();
+      ride.debugSetRides([record(258, 'pending')], currentRideId: 258);
+      expect(ride.vehicleAnimation, isNull, reason: 'nothing assigned yet');
+
+      ride.handleRideStatusUpdate('clustered', 258);
+      expect(ride.vehicleAnimation, isNull);
+
+      // Driver accepts.
+      ride.handleRideStatusUpdate('assigned', 258);
+      final assigned = ride.vehicleAnimation!;
+      expect(assigned.path.last.lat, closeTo(12.9716, 1e-9));
+      expect(assigned.path.last.lng, closeTo(77.5946, 1e-9));
+      expect(assigned.path.length, 2);
+    });
+
+    test('vehicleAnimation switches from the pickup leg to the trip leg', () {
+      final ride = RideProvider();
+      ride.debugSetRides([record(258, 'assigned')], currentRideId: 258);
+      expect(ride.isInTransit, isFalse);
+
+      ride.handleRideStatusUpdate('in_progress', 258);
+      final transit = ride.vehicleAnimation!;
+
+      // No route estimate in a unit test, so the straight-line fallback runs
+      // pickup → destination.
+      expect(transit.path.first.lat, closeTo(12.9716, 1e-9));
+      expect(transit.path.last.lat, closeTo(12.9352, 1e-9));
+      expect(ride.isInTransit, isTrue);
+    });
+
+    test('a finished ride stops feeding the map its stale vehicle record', () {
+      final ride = RideProvider();
+      ride.debugSetRides([record(258, 'in_progress')], currentRideId: 258);
+      ride.debugSetVehicle(
+        AssignedVehicle(
+          id: 7,
+          licensePlate: 'KA01AB1234',
+          status: 'active',
+          lat: 12.99,
+          lng: 77.60,
+        ),
+      );
+
+      // While the trip is under way the map draws it.
+      expect(ride.trackableVehicle, isNotNull);
+      expect(ride.vehicleAnimation, isNotNull);
+
+      ride.handleRideStatusUpdate('completed', 258);
+
+      // The backend never clears the vehicle record, so the map must stop
+      // being fed it — otherwise the car would be dragged back to a
+      // pre-trip coordinate after the animation finished at the destination.
+      expect(ride.trackableVehicle, isNull);
+      expect(ride.vehicleAnimation, isNull);
+      expect(ride.isInTransit, isFalse);
+    });
   });
 }

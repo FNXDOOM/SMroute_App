@@ -1,7 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../models/vehicle_animation.dart';
 import '../services/geocoding_service.dart';
 import '../services/map_tiles.dart';
 import '../theme/app_theme.dart';
@@ -50,6 +54,8 @@ class LiveMap extends StatefulWidget {
     this.followPoint,
     this.followZoom = 15.5,
     this.tileSource,
+    this.vehicleAnimation,
+    this.followVehicle = false,
   });
 
   final GeoPoint? pickup;
@@ -86,11 +92,22 @@ class LiveMap extends StatefulWidget {
   /// one, and by tests so no network probe is needed.
   final MapTileSource? tileSource;
 
+  /// A path for the ride's own vehicle to walk, derived from the ride status by
+  /// `RideVehicleAnimation`. The walk continues from wherever the vehicle is
+  /// already drawn, so a status change, a new route or a fresh GPS fix retargets
+  /// the motion instead of restarting it. Null means no vehicle is under ride
+  /// control (nothing is assigned yet, or the ride has finished).
+  final VehicleAnimation? vehicleAnimation;
+
+  /// Track the animated vehicle with the camera — the site's `followCamera`,
+  /// which it enables only while the trip is in progress.
+  final bool followVehicle;
+
   @override
   State<LiveMap> createState() => _LiveMapState();
 }
 
-class _LiveMapState extends State<LiveMap> {
+class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
   final MapController _controller = MapController();
   bool _ready = false;
 
@@ -100,9 +117,50 @@ class _LiveMapState extends State<LiveMap> {
   NetworkTileProvider? _tileProvider;
   String? _providerForSource;
 
+  // ── Vehicle motion ────────────────────────────────────────────────────────
+  //
+  // Two mechanisms, both ported from the website's `AppMap`:
+  //
+  //  * a path *walk* for the ride's own vehicle — `RideVehicleAnimation` turns
+  //    the ride status into a polyline, and the car advances along it at a
+  //    constant ground rate, rotated to the segment heading;
+  //  * a smooth *retarget* for every other position update (a real fix arriving
+  //    over `/tracking/ws` or the 4 s poll) — the marker eases from where it is
+  //    drawn right now to the new point over 1200 ms, so an update never
+  //    teleports it and an update landing mid-flight retargets the motion
+  //    rather than restarting it from the old point.
+  //
+  // One ticker drives both, runs only while something is actually moving, and
+  // only the vehicle marker layer listens to [_motionFrame] — a moving car
+  // never rebuilds the tiles, the route or the rest of the screen.
+  final Map<String, _VehicleMotion> _motions = <String, _VehicleMotion>{};
+  final Map<String, String> _vehicleLabels = <String, String>{};
+  final ValueNotifier<int> _motionFrame = ValueNotifier<int>(0);
+
+  late final Ticker _ticker;
+  Duration _lastTick = Duration.zero;
+
+  /// Vehicle currently walking [LiveMap.vehicleAnimation], and that animation's
+  /// key, so an unchanged animation leaves the in-flight walk alone.
+  String? _walkVehicleId;
+  String? _walkKey;
+
+  /// Movement below this is GPS jitter, not travel — animating it would make
+  /// the marker jiggle in place at every poll.
+  static const double _jitterMeters = 2;
+
   @override
   void initState() {
     super.initState();
+    _ticker = createTicker(_onTick);
+
+    // Seed from the state the backend already reports: opening or reopening the
+    // screen paints the vehicle where it is now rather than animating it in
+    // from a previous session's stale point.
+    _syncVehicles(widget.vehicles, seed: true);
+    _applyAnimation(widget.vehicleAnimation);
+    _syncTicker();
+
     final override = widget.tileSource;
     if (override != null) {
       _applySource(override);
@@ -111,6 +169,175 @@ class _LiveMapState extends State<LiveMap> {
         if (mounted) setState(() => _applySource(source));
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    _motionFrame.dispose();
+    super.dispose();
+  }
+
+  /// Reconciles the drawn vehicles with a new list from the ride provider.
+  ///
+  /// [seed] adopts positions without animating, for first paint.
+  void _syncVehicles(List<MapVehicle> vehicles, {bool seed = false}) {
+    final present = <String>{};
+
+    for (final vehicle in vehicles) {
+      if (!vehicle.lat.isFinite || !vehicle.lng.isFinite) continue;
+      present.add(vehicle.id);
+      final label = vehicle.label;
+      if (label != null) _vehicleLabels[vehicle.id] = label;
+
+      final target = GeoPoint(vehicle.lat, vehicle.lng);
+      final motion = _motions[vehicle.id];
+      if (motion == null) {
+        _motions[vehicle.id] = _VehicleMotion(target);
+        continue;
+      }
+      // While a path animation owns this marker, the ride drives it; a polled
+      // coordinate must not yank it off the route.
+      if (vehicle.id == _walkVehicleId) continue;
+
+      if (seed || distanceMeters(motion.rendered, target) <= _jitterMeters) {
+        motion.rendered = target;
+        continue;
+      }
+      motion.retargetTo(target);
+    }
+
+    // Retire markers that are gone — never the walked one, which the ride
+    // animation owns rather than `vehicles`, and never one still moving, so a
+    // car that was withdrawn mid-glide runs its motion out instead of being
+    // deleted by an unrelated rebuild. It is collected on the next update
+    // after it settles.
+    _motions.removeWhere(
+      (id, motion) =>
+          !present.contains(id) &&
+          id != _walkVehicleId &&
+          !motion.isAnimating,
+    );
+  }
+
+  /// Starts, retargets or stops the ride's path walk.
+  void _applyAnimation(VehicleAnimation? animation) {
+    final usable = (animation != null && animation.isUsable) ? animation : null;
+
+    if (usable == null) {
+      // The ride finished, was cancelled, or lost its vehicle. A walk already
+      // in flight is allowed to run to the end of its path so the car settles
+      // at the destination instead of freezing mid-street; nothing new starts.
+      final walking = _walkVehicleId;
+      if (walking != null) {
+        final motion = _motions[walking];
+        if (motion != null && motion.walking) {
+          motion.finishOnly = true;
+        } else {
+          _motions.remove(walking);
+        }
+      }
+      _walkVehicleId = null;
+      _walkKey = null;
+      return;
+    }
+
+    // Same motion — leave the walk exactly where it is (site: `animationKey`).
+    if (usable.key == _walkKey) return;
+
+    final previousGoal = _walkVehicleId == null
+        ? null
+        : _motions[_walkVehicleId!]?.path?.last;
+    final path = usable.retargetPath(
+      current: _motions[usable.vehicleId]?.rendered,
+      previousGoal: previousGoal,
+    );
+    if (path.length < 2) return;
+
+    // A different vehicle took over (a real one replacing the simulated
+    // stand-in) — drop the old marker so two cars can't share the screen.
+    if (_walkVehicleId != null && _walkVehicleId != usable.vehicleId) {
+      _motions.remove(_walkVehicleId);
+    }
+
+    final motion = _motions.putIfAbsent(
+      usable.vehicleId,
+      () => _VehicleMotion(path.first),
+    );
+    motion
+      ..clearTween()
+      // `retargetPath` guarantees `path.first` is the rendered position, so
+      // this continues the walk rather than jumping to the authored start.
+      ..rendered = path.first
+      ..path = path
+      ..elapsedMs = 0
+      ..durationMs = usable.scaledDuration(path).inMilliseconds.toDouble()
+      ..loop = usable.loop
+      ..finishOnly = false;
+
+    _walkVehicleId = usable.vehicleId;
+    _walkKey = usable.key;
+  }
+
+  /// Runs the ticker only while something is moving, so an idle map (and an
+  /// idle phone battery) is untouched.
+  void _syncTicker() {
+    final moving = _motions.values.any((motion) => motion.isAnimating);
+    if (moving && !_ticker.isActive) {
+      _lastTick = Duration.zero;
+      _ticker.start();
+    } else if (!moving && _ticker.isActive) {
+      _ticker.stop();
+    }
+  }
+
+  void _onTick(Duration elapsed) {
+    final deltaMs = (elapsed - _lastTick).inMicroseconds / 1000.0;
+    _lastTick = elapsed;
+    if (deltaMs <= 0) return;
+
+    var moving = false;
+    for (final motion in _motions.values) {
+      if (motion.advance(deltaMs)) moving = true;
+    }
+
+    _motionFrame.value++; // repaints the vehicle layer only
+    if (!moving) _ticker.stop();
+
+    final walking = _walkVehicleId;
+    if (widget.followVehicle && _ready && walking != null) {
+      final position = _motions[walking]?.rendered;
+      if (position != null) {
+        // Match the site: follow at least the tracking zoom, never zoom out.
+        _controller.move(
+          LatLng(position.lat, position.lng),
+          math.max(widget.followZoom, _controller.camera.zoom),
+        );
+      }
+    }
+  }
+
+  List<Marker> _vehicleMarkers() {
+    final markers = <Marker>[];
+    for (final entry in _motions.entries) {
+      final motion = entry.value;
+      final position = motion.rendered;
+      final bearing = motion.bearingDegrees;
+      final marker = _VehicleMarker(label: _vehicleLabels[entry.key]);
+      markers.add(
+        Marker(
+          point: LatLng(position.lat, position.lng),
+          width: 44,
+          height: 44,
+          // `Marker.rotate` only counter-rotates against the map; a heading is
+          // applied to the child, as flutter_map's own docs direct.
+          child: bearing == null
+              ? marker
+              : Transform.rotate(angle: bearing * math.pi / 180, child: marker),
+        ),
+      );
+    }
+    return markers;
   }
 
   void _applySource(MapTileSource source) {
@@ -164,10 +391,19 @@ class _LiveMapState extends State<LiveMap> {
   void didUpdateWidget(covariant LiveMap oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    // Motion first: a new GPS fix retargets the marker, a new ride animation
+    // (status change, route arriving late, real vehicle replacing the stand-in)
+    // starts a continuous walk from where the car is currently drawn.
+    _syncVehicles(widget.vehicles);
+    _applyAnimation(widget.vehicleAnimation);
+    _syncTicker();
+
     // Follow mode takes precedence over fitting: while a trip is in progress
-    // the camera tracks the vehicle rather than the whole route.
+    // the camera tracks the vehicle rather than the whole route. Ignored while
+    // the ticker is driving the camera, so the two can't fight each other.
     final follow = widget.followPoint;
     if (follow != null) {
+      if (widget.followVehicle) return;
       final previous = oldWidget.followPoint;
       final moved =
           previous == null ||
@@ -259,6 +495,8 @@ class _LiveMapState extends State<LiveMap> {
           ),
         ],
 
+        // Pickup and drop-off never move, so they stay outside the motion
+        // listener and are not rebuilt on every animation frame.
         MarkerLayer(
           markers: [
             if (widget.destination != null)
@@ -275,14 +513,13 @@ class _LiveMapState extends State<LiveMap> {
                 height: 42,
                 child: const _PickupMarker(),
               ),
-            for (final v in widget.vehicles)
-              Marker(
-                point: LatLng(v.lat, v.lng),
-                width: 44,
-                height: 44,
-                child: _VehicleMarker(label: v.label),
-              ),
           ],
+        ),
+
+        // The only layer that repaints while a vehicle moves.
+        ListenableBuilder(
+          listenable: _motionFrame,
+          builder: (context, _) => MarkerLayer(markers: _vehicleMarkers()),
         ),
 
         if (widget.attribution && source != null)
@@ -459,3 +696,112 @@ class _VehicleMarker extends StatelessWidget {
     );
   }
 }
+
+/// How one vehicle marker is moving.
+///
+/// The key invariant: this holds where the marker is drawn **right now**, never
+/// a target it is still travelling to. That is what lets every new input — a
+/// GPS fix, a status change, a route that arrived late — continue from the
+/// position the user is actually looking at, instead of snapping or restarting.
+class _VehicleMotion {
+  _VehicleMotion(this.rendered);
+
+  /// Discrete position updates ease over this long (site `syncMarkers`).
+  static const double _retargetMs = 1200;
+
+  /// Below this a new fix is jitter, not travel, and must not spin the marker.
+  static const double _minHeadingMeters = 1;
+
+  /// Where the marker is drawn.
+  GeoPoint rendered;
+
+  /// Heading in compass degrees; kept when a sample has none, so a stationary
+  /// car does not snap back to north.
+  double? bearingDegrees;
+
+  GeoPoint? _tweenFrom;
+  GeoPoint? _tweenTo;
+  double _tweenElapsedMs = 0;
+  double _tweenMs = 0;
+
+  /// Path walk (site `animateVehicleAlongPath`). Null once finished, which is
+  /// what parks the vehicle at the end of its route.
+  List<GeoPoint>? path;
+  double elapsedMs = 0;
+  double durationMs = 0;
+  bool loop = false;
+
+  /// Set when the ride finished mid-walk: the current path may only run to its
+  /// end, and must not restart.
+  bool finishOnly = false;
+
+  bool get _tweening => _tweenFrom != null && _tweenTo != null && _tweenMs > 0;
+  bool get walking => path != null && path!.length >= 2 && durationMs > 0;
+
+  /// True while this marker is still moving.
+  bool get isAnimating => _tweening || walking;
+
+  /// Ease from the current rendered position to [target].
+  ///
+  /// Called again mid-flight this re-targets from the current position, so the
+  /// marker never jumps back to where the previous update started.
+  void retargetTo(GeoPoint target) {
+    // Heading turns immediately, position eases — same split as the site.
+    if (distanceMeters(rendered, target) > _minHeadingMeters) {
+      bearingDegrees = bearingBetween(rendered, target);
+    }
+    _tweenFrom = rendered;
+    _tweenTo = target;
+    _tweenElapsedMs = 0;
+    _tweenMs = _retargetMs;
+  }
+
+  void clearTween() {
+    _tweenFrom = null;
+    _tweenTo = null;
+    _tweenElapsedMs = 0;
+    _tweenMs = 0;
+  }
+
+  /// Advance by [deltaMs]; returns true while still moving.
+  bool advance(double deltaMs) {
+    if (_tweening) {
+      _tweenElapsedMs += deltaMs;
+      final t = (_tweenElapsedMs / _tweenMs).clamp(0.0, 1.0);
+      final eased = t * t * (3 - 2 * t); // smoothstep — site parity
+      rendered = _lerpGeo(_tweenFrom!, _tweenTo!, eased);
+      if (t >= 1) clearTween();
+    }
+
+    if (walking) {
+      elapsedMs += deltaMs;
+      var t = elapsedMs / durationMs;
+      if (t >= 1) {
+        if (loop && !finishOnly) {
+          elapsedMs %= durationMs;
+          t = elapsedMs / durationMs;
+        } else {
+          t = 1;
+        }
+      }
+
+      final sample = samplePath(path!, t);
+      if (sample != null) {
+        rendered = sample.position;
+        final heading = sample.bearingDegrees;
+        if (heading != null) bearingDegrees = heading;
+      }
+
+      // Walk complete: park here. This is what stops the vehicle at the pickup
+      // and at the destination instead of looping back to the start.
+      if (t >= 1) path = null;
+    }
+
+    return isAnimating;
+  }
+}
+
+GeoPoint _lerpGeo(GeoPoint a, GeoPoint b, double ratio) => GeoPoint(
+      a.lat + (b.lat - a.lat) * ratio,
+      a.lng + (b.lng - a.lng) * ratio,
+    );

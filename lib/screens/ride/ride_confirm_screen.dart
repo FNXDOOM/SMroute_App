@@ -145,15 +145,19 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
     final destination = GeoPoint(ride.destLat, ride.destLng);
     final route = _route?.geometry ?? const <GeoPoint>[];
     // Narrow the vehicle's nullable coordinates once, so the tree below can't
-    // drift out of sync with `hasVehicle`.
-    final vehicle = provider.assignedVehicle;
+    // drift out of sync with `hasVehicle`. Only drawn while the ride is live
+    // (see RideProvider.trackableVehicle).
+    final vehicle = provider.trackableVehicle;
     final vehicleLat = vehicle?.lat;
     final vehicleLng = vehicle?.lng;
     final hasVehicle = vehicleLat != null && vehicleLng != null;
     final vehiclePosition = hasVehicle
         ? '${vehicleLat.toStringAsFixed(4)}, ${vehicleLng.toStringAsFixed(4)}'
         : null;
-    final following = status == 'in_progress' && hasVehicle;
+    // The trip leg is the only one the camera follows (site `followCamera`).
+    // The camera is driven from the animation itself, so it tracks the smoothly
+    // interpolated car rather than the last polled coordinate.
+    final following = status == 'in_progress';
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -173,10 +177,14 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                   ),
                 ]
               : const [],
+          // Drives the car from the ride status — the backend assigns no
+          // vehicle position for most rides, so without this the map shows
+          // nothing to track.
+          vehicleAnimation: provider.vehicleAnimation,
+          followVehicle: following,
           initialCenter: pickup,
           attribution: false,
           cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),
-          followPoint: following ? GeoPoint(vehicleLat, vehicleLng) : null,
         ),
         topBar: Row(
           children: [
