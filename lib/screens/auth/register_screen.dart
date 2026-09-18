@@ -22,6 +22,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final TextEditingController _passwordController = TextEditingController();
 
   @override
+  void initState() {
+    super.initState();
+    // A login error left in the shared AuthProvider must not bleed into this
+    // screen's first render (found in on-device QA).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && context.read<AuthProvider>().error != null) {
+        context.read<AuthProvider>().clearError();
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _nameController.dispose();
     _emailController.dispose();

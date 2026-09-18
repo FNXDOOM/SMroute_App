@@ -133,12 +133,18 @@ class _Tab extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 3),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
-                color: color,
+            // Fitted so a long label ("Payment") scales down instead of
+            // clipping (found in on-device QA).
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                label,
+                maxLines: 1,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                  color: color,
+                ),
               ),
             ),
           ],

@@ -31,6 +31,14 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   bool get isBootstrapping => _isBootstrapping;
   String? get error => _error;
+
+  /// Clears the last error (used when navigating between auth screens so a
+  /// login failure doesn't render on the register screen).
+  void clearError() {
+    if (_error == null) return;
+    _error = null;
+    notifyListeners();
+  }
   bool get isAuthenticated => _currentUser != null;
   bool get isAwaitingEmailCode => _awaitingEmailCode;
   String get pendingEmail => _pendingEmail;

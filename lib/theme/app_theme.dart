@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
 /// ════════════════════════════════════════════════════════════════════════════
@@ -268,51 +269,49 @@ class AppDecor {
 
   /// `.uber-card` — #1F1F1F, 1px #333, 12px, 20/24 padding.
   static BoxDecoration card({bool elevated = false}) => BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: AppRadius.card,
-        border: Border.all(color: AppColors.border),
-        boxShadow: elevated ? AppShadows.sm : null,
-      );
+    color: AppColors.surface,
+    borderRadius: AppRadius.card,
+    border: Border.all(color: AppColors.border),
+    boxShadow: elevated ? AppShadows.sm : null,
+  );
 
   /// Emphasised card (site: `border-black dark:border-white` — active booking).
   static BoxDecoration cardEmphasis() => BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: AppRadius.card,
-        border: Border.all(color: AppColors.paper, width: 1.25),
-      );
+    color: AppColors.surface,
+    borderRadius: AppRadius.card,
+    border: Border.all(color: AppColors.paper, width: 1.25),
+  );
 
   /// `.uber-float` — floating panel: 16px, md shadow.
   static BoxDecoration floating({bool topOnly = false}) => BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: topOnly ? AppRadius.sheet : AppRadius.all(AppRadius.xl),
-        border: topOnly
-            ? const Border(top: BorderSide(color: AppColors.border))
-            : Border.all(color: AppColors.border),
-        boxShadow: topOnly ? AppShadows.sheet : AppShadows.md,
-      );
+    color: AppColors.surface,
+    borderRadius: topOnly ? AppRadius.sheet : AppRadius.all(AppRadius.xl),
+    border: topOnly
+        ? const Border(top: BorderSide(color: AppColors.border))
+        : Border.all(color: AppColors.border),
+    boxShadow: topOnly ? AppShadows.sheet : AppShadows.md,
+  );
 
   /// `.uber-field` — 52px, #1F1F1F, 1px #333, radius 8.
   static BoxDecoration field({bool focused = false}) => BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: AppRadius.field,
-        border: Border.all(
-          color: focused ? AppColors.paper : AppColors.border,
-        ),
-      );
+    color: AppColors.surface,
+    borderRadius: AppRadius.field,
+    border: Border.all(color: focused ? AppColors.paper : AppColors.border),
+  );
 
   /// Outlined row with no fill (site: `rounded-xl border px-4 py-3`) — used for
   /// toggles and lightweight option rows so they don't compete with cards.
   static BoxDecoration flatRow() => BoxDecoration(
-        borderRadius: AppRadius.all(AppRadius.lg),
-        border: Border.all(color: AppColors.border),
-      );
+    borderRadius: AppRadius.all(AppRadius.lg),
+    border: Border.all(color: AppColors.border),
+  );
 
   /// Nested info row (site: rounded-xl + border + #2A2A2A).
   static BoxDecoration infoRow() => BoxDecoration(
-        color: AppColors.surfaceAlt,
-        borderRadius: AppRadius.all(AppRadius.lg),
-        border: Border.all(color: AppColors.border),
-      );
+    color: AppColors.surfaceAlt,
+    borderRadius: AppRadius.all(AppRadius.lg),
+    border: Border.all(color: AppColors.border),
+  );
 }
 
 /// ThemeData wiring so Material widgets inherit the website's language.
@@ -344,7 +343,8 @@ class AppTheme {
   static const TextStyle bodySmall = AppType.caption;
   static const TextStyle labelUppercase = AppType.eyebrow;
 
-  static TextTheme get textTheme => const TextTheme(
+  static TextTheme get textTheme =>
+      const TextTheme(
         displayLarge: AppType.hero,
         displayMedium: AppType.pageTitle,
         displaySmall: AppType.panelTitle,
@@ -381,6 +381,17 @@ class AppTheme {
 
     return ThemeData(
       useMaterial3: true,
+      // Native-feeling page transitions + gestures: Android 15 predictive
+      // back (swipe-from-edge previews the previous page), iOS interactive
+      // pop (drag the previous page in from the left edge). Both pop the
+      // real Navigator stack — no custom gesture code anywhere.
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: <TargetPlatform, PageTransitionsBuilder>{
+          TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+        },
+      ),
       brightness: Brightness.dark,
       scaffoldBackgroundColor: AppColors.bg,
       canvasColor: AppColors.bg,
@@ -399,10 +410,7 @@ class AppTheme {
           horizontal: AppSpacing.md,
           vertical: AppSpacing.md,
         ),
-        hintStyle: const TextStyle(
-          color: AppColors.textDisabled,
-          fontSize: 15,
-        ),
+        hintStyle: const TextStyle(color: AppColors.textDisabled, fontSize: 15),
         labelStyle: const TextStyle(color: AppColors.textSecondary),
         errorStyle: const TextStyle(color: AppColors.error, fontSize: 13),
         border: OutlineInputBorder(
@@ -481,10 +489,7 @@ class AppTheme {
           shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(AppRadius.sm)),
           ),
-          textStyle: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
+          textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
         ),
       ),
       appBarTheme: const AppBarTheme(
@@ -524,9 +529,7 @@ class AppTheme {
           side: const BorderSide(color: AppColors.border),
         ),
         titleTextStyle: AppType.cardTitle,
-        contentTextStyle: AppType.body.copyWith(
-          color: AppColors.textSecondary,
-        ),
+        contentTextStyle: AppType.body.copyWith(color: AppColors.textSecondary),
       ),
       cardTheme: CardThemeData(
         color: AppColors.surface,

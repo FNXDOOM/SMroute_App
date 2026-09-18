@@ -52,8 +52,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                   description:
                       'Fares are computed server-side and paid via Razorpay '
                       'at checkout.',
-                  onBack: () =>
-                      Navigator.pushReplacementNamed(context, '/profile'),
+                  onBack: () => Navigator.maybePop(context),
                   backLabel: 'Profile',
                 ),
                 const SizedBox(height: AppSpacing.lg),

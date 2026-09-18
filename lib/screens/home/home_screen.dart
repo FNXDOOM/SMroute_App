@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:provider/provider.dart';
 
 import '../../models/mock_data.dart';
@@ -33,6 +34,9 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _destController = TextEditingController();
   final FocusNode _destFocus = FocusNode();
+
+  /// Last system-back press at the root (double-back-to-exit window).
+  DateTime? _lastBackAt;
 
   Timer? _debounce;
   List<PlaceSuggestion> _suggestions = const [];
@@ -213,7 +217,17 @@ class _HomeScreenState extends State<HomeScreen> {
     return 'Good evening';
   }
 
-  void _go(String route) => Navigator.pushReplacementNamed(context, route);
+  /// Tab switching keeps a bounded stack: return to the app's root (Home)
+  /// without rebuilding it, then push the target tab on top. System back /
+  /// edge-swipe from the tab then pops back to Home — instead of
+  /// pushReplacementNamed, which made every tab the stack root and left back
+  /// with nothing to pop (it exited the app).
+  void _go(String route) {
+    Navigator.popUntil(context, (route) => route.isFirst);
+    if (route != '/') {
+      Navigator.pushNamed(context, route);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -238,259 +252,290 @@ class _HomeScreenState extends State<HomeScreen> {
     final vehicle = provider.assignedVehicle;
     final hasVehicle = vehicle?.lat != null && vehicle?.lng != null;
 
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      body: Column(
-        children: [
-          Expanded(
-            child: MapFirstScaffold(
-              map: LiveMap(
-                fullBleed: true,
-                pickup: pickupPoint,
-                destination: destPoint,
-                route: provider.routeEstimate?.geometry ?? const [],
-                vehicles: hasVehicle
-                    ? [
-                        MapVehicle(
-                          id: '${vehicle!.id}',
-                          lat: vehicle.lat!,
-                          lng: vehicle.lng!,
-                          label: vehicle.licensePlate,
-                        ),
-                      ]
-                    : const [],
-                initialCenter: pickupPoint ?? GeocodingService.defaultPickup,
-                attribution: false,
-                cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),
+    return PopScope<bool>(
+      // Root of the app: system back must NOT silently exit (Google Maps
+      // pattern). First back = toast; second back within 2s = let it go.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final now = DateTime.now();
+        if (_lastBackAt == null ||
+            now.difference(_lastBackAt!) > const Duration(seconds: 2)) {
+          _lastBackAt = now;
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(
+                content: Text('Press back again to exit SmartRoute'),
+                duration: Duration(seconds: 2),
               ),
-              topBar: _MapTopBar(
-                greeting: _greeting(),
-                firstName: firstName.isEmpty ? 'Rider' : firstName,
-                notifCount: notifCount,
-                onInbox: () => _go('/inbox'),
-                onProfile: () => _go('/profile'),
-              ),
-              sheet: AppDraggableSheet(
-                initialSize: hasRide ? 0.56 : 0.52,
-                builder: (context, controller) => ListView(
-                  controller: controller,
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.gutter,
-                    0,
-                    AppSpacing.gutter,
-                    AppSpacing.gutter,
-                  ),
-                  children: [
-                    // ── Active ride takes over the panel (site behaviour) ──
-                    if (hasRide) ...[
-                      _ActiveRidePanel(
-                        provider: provider,
-                        ride: active,
-                        onTrack: () =>
-                            Navigator.pushNamed(context, '/ride-confirm'),
-                        onCancel: _cancelRide,
-                        onDismiss: provider.dismissActiveRide,
-                      ),
-                      const SizedBox(height: AppSpacing.lg),
-                    ],
-
-                    // ── Booking form ──────────────────────────────────────
-                    if (!hasRide) ...[
-                      const SheetHeader(
-                        eyebrow: 'Request a ride',
-                        title: 'Where to?',
-                        subtitle: 'Flat fares · No surge · Shared options',
-                      ),
-                      const SizedBox(height: AppSpacing.md),
-                      _PickupField(
-                        label: provider.pickupLabel,
-                        confirmed: provider.pickupConfirmed,
-                        locating: _locating,
-                        onUseGps: _useGps,
-                        onPickOnMap: () => _openPicker('pickup'),
-                      ),
-                      const SizedBox(height: AppSpacing.sm),
-                      PlaceField(
-                        marker: PlaceMarker.square,
-                        controller: _destController,
-                        focusNode: _destFocus,
-                        hint: 'Where to?',
-                        onChanged: _onDestinationChanged,
-                        onSubmitted: (_) => _requestRide(),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            ValueListenableBuilder<TextEditingValue>(
-                              valueListenable: _destController,
-                              builder: (context, value, _) => value.text.isEmpty
-                                  ? const SizedBox.shrink()
-                                  : IconSquareButton(
-                                      icon: Icons.close,
-                                      size: 36,
-                                      tooltip: 'Clear',
-                                      onTap: () {
-                                        _destController.clear();
-                                        context
-                                            .read<RideProvider>()
-                                            .setDestination('');
-                                        setState(() => _suggestions = const []);
-                                      },
-                                    ),
-                            ),
-                            const SizedBox(width: AppSpacing.xxs),
-                            IconSquareButton(
-                              icon: Icons.map_outlined,
-                              size: 36,
-                              tooltip: 'Choose on map',
-                              onTap: () => _openPicker('destination'),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      // Suggestions (site: dark popover under the field).
-                      AnimatedSize(
-                        duration: AppMotion.base,
-                        curve: AppMotion.enter,
-                        alignment: Alignment.topCenter,
-                        child: _suggesting
-                            ? const Padding(
-                                padding: EdgeInsets.only(top: AppSpacing.sm),
-                                child: SkeletonRows(count: 2, height: 52),
-                              )
-                            : _suggestions.isEmpty
-                            ? const SizedBox.shrink()
-                            : Padding(
-                                padding: const EdgeInsets.only(
-                                  top: AppSpacing.xs,
-                                ),
-                                child: Column(
-                                  children: [
-                                    for (final place in _suggestions.take(5))
-                                      PlaceSuggestionTile(
-                                        title: place.label
-                                            .split(',')
-                                            .first
-                                            .trim(),
-                                        subtitle: place.label,
-                                        onTap: () => _chooseDestination(place),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                      ),
-
-                      // Route estimate + live traffic (site rows).
-                      AnimatedSize(
-                        duration: AppMotion.base,
-                        curve: AppMotion.enter,
-                        alignment: Alignment.topCenter,
-                        child: _routeSection(provider),
-                      ),
-
-                      const SizedBox(height: AppSpacing.md),
-                      const SectionLabel('Choose a ride'),
-                      const SizedBox(height: AppSpacing.sm),
-                      for (final option in MockData.rideOptions)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-                          child: RideOptionCard(
-                            ride: option,
-                            isSelected:
-                                provider.selectedOption?.id == option.id,
-                            onTap: () => provider.selectOption(option),
+            );
+          return;
+        }
+        SystemNavigator.pop();
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        body: Column(
+          children: [
+            Expanded(
+              child: MapFirstScaffold(
+                map: LiveMap(
+                  fullBleed: true,
+                  pickup: pickupPoint,
+                  destination: destPoint,
+                  route: provider.routeEstimate?.geometry ?? const [],
+                  vehicles: hasVehicle
+                      ? [
+                          MapVehicle(
+                            id: '${vehicle!.id}',
+                            lat: vehicle.lat!,
+                            lng: vehicle.lng!,
+                            label: vehicle.licensePlate,
                           ),
+                        ]
+                      : const [],
+                  initialCenter: pickupPoint ?? GeocodingService.defaultPickup,
+                  attribution: false,
+                  cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),
+                ),
+                topBar: _MapTopBar(
+                  greeting: _greeting(),
+                  firstName: firstName.isEmpty ? 'Rider' : firstName,
+                  notifCount: notifCount,
+                  onInbox: () => _go('/inbox'),
+                  onProfile: () => _go('/profile'),
+                ),
+                sheet: AppDraggableSheet(
+                  initialSize: hasRide ? 0.56 : 0.52,
+                  builder: (context, controller) => ListView(
+                    controller: controller,
+                    padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.gutter,
+                      0,
+                      AppSpacing.gutter,
+                      AppSpacing.gutter,
+                    ),
+                    children: [
+                      // ── Active ride takes over the panel (site behaviour) ──
+                      if (hasRide) ...[
+                        _ActiveRidePanel(
+                          provider: provider,
+                          ride: active,
+                          onTrack: () =>
+                              Navigator.pushNamed(context, '/ride-confirm'),
+                          onCancel: _cancelRide,
+                          onDismiss: provider.dismissActiveRide,
                         ),
-                      const SizedBox(height: AppSpacing.sm),
-                      if (provider.error != null) ...[
-                        ErrorBanner(message: provider.error!),
-                        const SizedBox(height: AppSpacing.sm),
+                        const SizedBox(height: AppSpacing.lg),
                       ],
-                      AppButton(
-                        label: 'Request ride',
-                        loading: provider.isBooking,
-                        onPressed: _requestRide,
-                      ),
-                    ],
 
-                    const SizedBox(height: AppSpacing.xl),
-
-                    // ── Recent rides (real backend data) ───────────────────
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text('Recent rides', style: AppType.title),
+                      // ── Booking form ──────────────────────────────────────
+                      if (!hasRide) ...[
+                        const SheetHeader(
+                          eyebrow: 'Request a ride',
+                          title: 'Where to?',
+                          subtitle: 'Flat fares · No surge · Shared options',
                         ),
-                        TextButton(
-                          onPressed: () => _go('/trips'),
-                          style: TextButton.styleFrom(
-                            minimumSize: const Size(0, 32),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: AppSpacing.xs,
-                            ),
-                            foregroundColor: AppColors.textSecondary,
-                          ),
-                          child: Row(
+                        const SizedBox(height: AppSpacing.md),
+                        _PickupField(
+                          label: provider.pickupLabel,
+                          confirmed: provider.pickupConfirmed,
+                          locating: _locating,
+                          onUseGps: _useGps,
+                          onPickOnMap: () => _openPicker('pickup'),
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        PlaceField(
+                          marker: PlaceMarker.square,
+                          controller: _destController,
+                          focusNode: _destFocus,
+                          hint: 'Where to?',
+                          onChanged: _onDestinationChanged,
+                          onSubmitted: (_) => _requestRide(),
+                          trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(
-                                'View all',
-                                style: AppType.caption.copyWith(
-                                  color: AppColors.textSecondary,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                              ValueListenableBuilder<TextEditingValue>(
+                                valueListenable: _destController,
+                                builder: (context, value, _) =>
+                                    value.text.isEmpty
+                                    ? const SizedBox.shrink()
+                                    : IconSquareButton(
+                                        icon: Icons.close,
+                                        size: 36,
+                                        tooltip: 'Clear',
+                                        onTap: () {
+                                          _destController.clear();
+                                          context
+                                              .read<RideProvider>()
+                                              .setDestination('');
+                                          setState(
+                                            () => _suggestions = const [],
+                                          );
+                                        },
+                                      ),
                               ),
-                              const SizedBox(width: 2),
-                              const Icon(Icons.chevron_right, size: 16),
+                              const SizedBox(width: AppSpacing.xxs),
+                              IconSquareButton(
+                                icon: Icons.map_outlined,
+                                size: 36,
+                                tooltip: 'Choose on map',
+                                onTap: () => _openPicker('destination'),
+                              ),
                             ],
                           ),
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    if (provider.isLoadingRides && provider.myRides.isEmpty)
-                      const SkeletonRows(count: 3, height: 58)
-                    else if (provider.myRides.isEmpty)
-                      const EmptyState(
-                        compact: true,
-                        icon: Icons.trip_origin,
-                        title: 'No rides yet',
-                        hint:
-                            'Your recent bookings will appear here once you '
-                            'request your first ride.',
-                      )
-                    else
-                      for (final ride in provider.myRides.take(3))
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-                          child: _TripRow(
-                            ride: ride,
-                            onTap: () => _go('/trips'),
-                          ),
+
+                        // Suggestions (site: dark popover under the field).
+                        AnimatedSize(
+                          duration: AppMotion.base,
+                          curve: AppMotion.enter,
+                          alignment: Alignment.topCenter,
+                          child: _suggesting
+                              ? const Padding(
+                                  padding: EdgeInsets.only(top: AppSpacing.sm),
+                                  child: SkeletonRows(count: 2, height: 52),
+                                )
+                              : _suggestions.isEmpty
+                              ? const SizedBox.shrink()
+                              : Padding(
+                                  padding: const EdgeInsets.only(
+                                    top: AppSpacing.xs,
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      for (final place in _suggestions.take(5))
+                                        PlaceSuggestionTile(
+                                          title: place.label
+                                              .split(',')
+                                              .first
+                                              .trim(),
+                                          subtitle: place.label,
+                                          onTap: () =>
+                                              _chooseDestination(place),
+                                        ),
+                                    ],
+                                  ),
+                                ),
                         ),
 
-                    const SizedBox(height: AppSpacing.sm),
-                    Text(
-                      'Map data © OpenStreetMap contributors · CARTO',
-                      style: AppType.caption.copyWith(
-                        color: AppColors.textDisabled,
-                        fontSize: 11,
+                        // Route estimate + live traffic (site rows).
+                        AnimatedSize(
+                          duration: AppMotion.base,
+                          curve: AppMotion.enter,
+                          alignment: Alignment.topCenter,
+                          child: _routeSection(provider),
+                        ),
+
+                        const SizedBox(height: AppSpacing.md),
+                        const SectionLabel('Choose a ride'),
+                        const SizedBox(height: AppSpacing.sm),
+                        for (final option in MockData.rideOptions)
+                          Padding(
+                            padding: const EdgeInsets.only(
+                              bottom: AppSpacing.xs,
+                            ),
+                            child: RideOptionCard(
+                              ride: option,
+                              isSelected:
+                                  provider.selectedOption?.id == option.id,
+                              onTap: () => provider.selectOption(option),
+                            ),
+                          ),
+                        const SizedBox(height: AppSpacing.sm),
+                        if (provider.error != null) ...[
+                          ErrorBanner(message: provider.error!),
+                          const SizedBox(height: AppSpacing.sm),
+                        ],
+                        AppButton(
+                          label: 'Request ride',
+                          loading: provider.isBooking,
+                          onPressed: _requestRide,
+                        ),
+                      ],
+
+                      const SizedBox(height: AppSpacing.xl),
+
+                      // ── Recent rides (real backend data) ───────────────────
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text('Recent rides', style: AppType.title),
+                          ),
+                          TextButton(
+                            onPressed: () => _go('/trips'),
+                            style: TextButton.styleFrom(
+                              minimumSize: const Size(0, 32),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpacing.xs,
+                              ),
+                              foregroundColor: AppColors.textSecondary,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'View all',
+                                  style: AppType.caption.copyWith(
+                                    color: AppColors.textSecondary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(width: 2),
+                                const Icon(Icons.chevron_right, size: 16),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: AppSpacing.xs),
+                      if (provider.isLoadingRides && provider.myRides.isEmpty)
+                        const SkeletonRows(count: 3, height: 58)
+                      else if (provider.myRides.isEmpty)
+                        const EmptyState(
+                          compact: true,
+                          icon: Icons.trip_origin,
+                          title: 'No rides yet',
+                          hint:
+                              'Your recent bookings will appear here once you '
+                              'request your first ride.',
+                        )
+                      else
+                        for (final ride in provider.myRides.take(3))
+                          Padding(
+                            padding: const EdgeInsets.only(
+                              bottom: AppSpacing.xs,
+                            ),
+                            child: _TripRow(
+                              ride: ride,
+                              onTap: () => _go('/trips'),
+                            ),
+                          ),
+
+                      const SizedBox(height: AppSpacing.sm),
+                      Text(
+                        'Map data © OpenStreetMap contributors · CARTO',
+                        style: AppType.caption.copyWith(
+                          color: AppColors.textDisabled,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-          BottomNavBar(
-            activeTab: 'home',
-            onHome: () {},
-            onTrips: () => _go('/trips'),
-            onInbox: () => _go('/inbox'),
-            onAccount: () => _go('/profile'),
-            notifCount: notifCount,
-          ),
-        ],
+            BottomNavBar(
+              activeTab: 'home',
+              onHome: () {},
+              onTrips: () => _go('/trips'),
+              onInbox: () => _go('/inbox'),
+              onAccount: () => _go('/profile'),
+              notifCount: notifCount,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -731,11 +776,18 @@ class _ActiveRidePanel extends StatelessWidget {
       );
     }
 
+    // Backend contract: a manually-accepted ride never gets a vehicle row
+    // (PATCH status unlinks virtual_stop_id), so once the ride is assigned a
+    // null vehicle is final — show the driver-assigned state instead of a
+    // spinner or a false "not available".
+    const driverAssigned = {'assigned', 'arriving', 'in_progress'};
     final vehicleLabel = vehicle != null
         ? vehicle.licensePlate
-        : (provider.vehicleAssignmentTimedOut
-              ? 'Not available for this ride'
-              : 'Assigning a vehicle…');
+        : driverAssigned.contains(status)
+              ? 'Driver assigned'
+              : (provider.vehicleAssignmentTimedOut
+                    ? 'Not available for this ride'
+                    : 'Assigning a vehicle…');
 
     return AppCard(
       emphasis: true,

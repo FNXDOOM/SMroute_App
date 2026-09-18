@@ -62,7 +62,7 @@ class _InboxScreenState extends State<InboxScreen> {
                 description: provider.isLoaded && unread > 0
                     ? '$unread unread'
                     : 'Ride updates, receipts and announcements',
-                onBack: () => Navigator.pushReplacementNamed(context, '/home'),
+                onBack: () => Navigator.maybePop(context),
                 backLabel: 'Home',
                 actions: unread > 0
                     ? TextButton.icon(

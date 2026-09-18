@@ -527,17 +527,27 @@ class InfoRow extends StatelessWidget {
             const SizedBox(width: AppSpacing.xs),
           ],
           Expanded(
+            flex: 2,
             child: Text(
               label,
               style: AppType.caption.copyWith(color: AppColors.textSecondary),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
+          const SizedBox(width: AppSpacing.sm),
           if (value != null)
-            Text(
-              value!,
-              style: AppType.data.copyWith(
-                color: AppColors.textPrimary,
-                fontSize: 13,
+            Expanded(
+              flex: 3,
+              child: Text(
+                value!,
+                style: AppType.data.copyWith(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.right,
               ),
             ),
           ?trailing,

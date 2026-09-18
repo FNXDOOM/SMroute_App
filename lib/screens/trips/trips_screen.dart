@@ -21,6 +21,12 @@ class TripsScreen extends StatefulWidget {
 }
 
 class _TripsScreenState extends State<TripsScreen> {
+  /// Empty-state CTA: Home is the stack root — pop to it (never push a
+  /// second Home).
+  void _goHome() {
+    Navigator.popUntil(context, (route) => route.isFirst);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -55,7 +61,7 @@ class _TripsScreenState extends State<TripsScreen> {
                 description: rides.isEmpty
                     ? 'Your ride history'
                     : '${rides.length} booking${rides.length == 1 ? '' : 's'}',
-                onBack: () => Navigator.pushReplacementNamed(context, '/home'),
+                onBack: () => Navigator.maybePop(context),
                 backLabel: 'Home',
               ),
             ),
@@ -86,11 +92,7 @@ class _TripsScreenState extends State<TripsScreen> {
                                       'will show up here with live status.',
                                   action: AppButton(
                                     label: 'Book a ride',
-                                    onPressed: () =>
-                                        Navigator.pushReplacementNamed(
-                                          context,
-                                          '/home',
-                                        ),
+                                    onPressed: () => _goHome(),
                                   ),
                                 ),
                               ],
