@@ -53,5 +53,11 @@ Uber-like design/
 # Flutter metadata
 .metadata
 
-# env-style build configs (keep templates, ignore local copies)
+# env-style build configs (keep templates, ignore real copies)
 config.local.json
+config.prod.json
+
+# local scratch tooling (never commit)
+.commandcode/
+.freebuff/
+.downscale.py

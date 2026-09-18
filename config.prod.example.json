@@ -1,0 +1,4 @@
+{
+  "SMARTROUTE_API_BASE_URL": "https://api.example.com",
+  "CLERK_PUBLISHABLE_KEY": "pk_test_PASTE-YOUR-CLERK-PUBLISHABLE-KEY"
+}
