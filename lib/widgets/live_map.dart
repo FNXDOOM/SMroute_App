@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../services/geocoding_service.dart';
+import '../services/map_tiles.dart';
 import '../theme/app_theme.dart';
 
 /// A vehicle position to draw on the map.
@@ -25,10 +26,10 @@ class MapVehicle {
 /// white line with a soft dark casing (the site's "Uber-style clarity"), plus
 /// tap-to-pick and a locate action.
 ///
-/// Tile source is a keyless dark raster style so no client-side map key is
-/// ever shipped. The website's own Stadia style (`/maps/stadia/style.json`)
-/// is auth-protected and MapLibre's native tile fetches can't carry our
-/// bearer token — see README.md §Feature status for the swap path.
+/// The basemap is resolved by [MapTiles], which prefers the website's own
+/// Stadia tiles served by the backend's authenticated proxy — so both clients
+/// draw the same map, and the API key stays server-side. A keyless dark raster
+/// is used only if that proxy can't serve tiles (README.md §Maps).
 class LiveMap extends StatefulWidget {
   const LiveMap({
     super.key,
@@ -48,6 +49,7 @@ class LiveMap extends StatefulWidget {
     this.cameraPadding = const EdgeInsets.all(48),
     this.followPoint,
     this.followZoom = 15.5,
+    this.tileSource,
   });
 
   final GeoPoint? pickup;
@@ -80,6 +82,10 @@ class LiveMap extends StatefulWidget {
   final GeoPoint? followPoint;
   final double followZoom;
 
+  /// Overrides basemap resolution — used by callers that have already resolved
+  /// one, and by tests so no network probe is needed.
+  final MapTileSource? tileSource;
+
   @override
   State<LiveMap> createState() => _LiveMapState();
 }
@@ -87,6 +93,40 @@ class LiveMap extends StatefulWidget {
 class _LiveMapState extends State<LiveMap> {
   final MapController _controller = MapController();
   bool _ready = false;
+
+  /// Basemap + its tile provider. The provider is created once per source so
+  /// its HTTP client is reused rather than rebuilt on every camera update.
+  MapTileSource? _source;
+  NetworkTileProvider? _tileProvider;
+  String? _providerForSource;
+
+  @override
+  void initState() {
+    super.initState();
+    final override = widget.tileSource;
+    if (override != null) {
+      _applySource(override);
+    } else {
+      MapTiles.resolve().then((source) {
+        if (mounted) setState(() => _applySource(source));
+      });
+    }
+  }
+
+  void _applySource(MapTileSource source) {
+    _source = source;
+    // Keyed by source identity only. The session token is resolved per tile
+    // request by MapTiles.tileHttpClient, so a refreshed token no longer needs
+    // the provider to be rebuilt (and can't leave it holding a stale one).
+    final key = '${source.id}|${source.headers['Authorization'] ?? ''}';
+    if (_providerForSource != key) {
+      _tileProvider = NetworkTileProvider(
+        headers: Map.of(source.headers),
+        httpClient: MapTiles.tileHttpClient(source),
+      );
+      _providerForSource = key;
+    }
+  }
 
   /// Signature of the last camera fit, so we re-fit only when the geometry
   /// actually changes (never fighting the user's own panning).
@@ -156,6 +196,8 @@ class _LiveMapState extends State<LiveMap> {
         .map((p) => LatLng(p.lat, p.lng))
         .toList(growable: false);
 
+    final source = _source;
+
     final map = FlutterMap(
       mapController: _controller,
       options: MapOptions(
@@ -183,14 +225,17 @@ class _LiveMapState extends State<LiveMap> {
         ),
       ),
       children: [
-        TileLayer(
-          urlTemplate:
-              'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-          subdomains: const ['a', 'b', 'c', 'd'],
-          userAgentPackageName: 'com.example.finalyr_app',
-          maxNativeZoom: 19,
-          tileBuilder: _darkTileBuilder,
-        ),
+        if (source != null)
+          TileLayer(
+            urlTemplate: source.urlTemplate,
+            subdomains: source.subdomains,
+            tileProvider: _tileProvider,
+            userAgentPackageName: 'com.example.finalyr_app',
+            maxNativeZoom: 19,
+            retinaMode: source.retina,
+            tileBuilder: (context, tile, tileImage) =>
+                _tileBuilder(context, tile, tileImage, source),
+          ),
 
         // Route: soft casing under a solid line (site recipe).
         if (routePoints.length >= 2) ...[
@@ -240,11 +285,11 @@ class _LiveMapState extends State<LiveMap> {
           ],
         ),
 
-        if (widget.attribution)
-          const RichAttributionWidget(
+        if (widget.attribution && source != null)
+          RichAttributionWidget(
             attributions: [
-              TextSourceAttribution('OpenStreetMap contributors'),
-              TextSourceAttribution('CARTO'),
+              for (final credit in source.attributions)
+                TextSourceAttribution(credit),
             ],
             alignment: AttributionAlignment.bottomLeft,
           ),
@@ -309,14 +354,31 @@ class _LiveMapState extends State<LiveMap> {
     );
   }
 
-  /// Keeps tiles reading as the same neutral surface the site uses when a
-  /// tile is missing/slow — avoids white flashes against the black canvas.
-  Widget _darkTileBuilder(
+  /// Places a tile on the canvas colour so a missing or slow tile can't flash
+  /// lighter squares against the black map, and lifts the fallback basemap's
+  /// near-black road casing so its streets are actually legible.
+  Widget _tileBuilder(
     BuildContext context,
     Widget tile,
     TileImage tileImage,
+    MapTileSource source,
   ) {
-    return ColoredBox(color: AppColors.surfaceAlt, child: tile);
+    Widget result = ColoredBox(color: AppColors.bg, child: tile);
+    if (source.brighten) {
+      // out = in + 45 (per channel): #030303→#303030, #111111→#3E3E3E,
+      // #222222→#4F4F4F — roughly the website's #545454 road neutral.
+      const lift = 45.0;
+      result = ColorFiltered(
+        colorFilter: const ColorFilter.matrix(<double>[
+          1, 0, 0, 0, lift,
+          0, 1, 0, 0, lift,
+          0, 0, 1, 0, lift,
+          0, 0, 0, 1, 0,
+        ]),
+        child: result,
+      );
+    }
+    return result;
   }
 }
 
