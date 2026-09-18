@@ -3,6 +3,9 @@
 // these tests catch it.
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:finalyr_app/models/payment_transaction.dart';
 import 'package:finalyr_app/models/user.dart';
@@ -13,6 +16,9 @@ import 'package:finalyr_app/services/geocoding_service.dart';
 import 'package:finalyr_app/services/api_client.dart';
 
 void main() {
+  // ApiClient reads the stored token through SharedPreferences.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('Backend contract: PaymentResponse (GET /payments/mine)', () {
     test('parses paise amount into rupees', () {
       final tx = PaymentTransaction.fromJson({
@@ -200,6 +206,124 @@ void main() {
 
     test('422 is a validation error (outside-India etc.)', () {
       expect(ApiException(422, 'outside India').isValidationError, isTrue);
+    });
+  });
+
+  // The intermittent "Clerk token has expired" bug: the app stored ONE session
+  // JWT and replayed it on every request, so requests succeeded for the first
+  // minute after a mint and then 401'd until the next app boot. These tests
+  // pin the behaviours that replaced it.
+  group('ApiClient token refresh (intermittent 401 recovery)', () {
+    setUp(() {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+    });
+
+    ApiClient clientWith(MockClient transport) =>
+        ApiClient.withHttpClient(transport, baseUrl: 'http://test.local');
+
+    test('a request carries the CURRENT token, not the one stored at login',
+        () async {
+      String? sentAuth;
+      final client = clientWith(
+        MockClient((request) async {
+          sentAuth = request.headers['Authorization'];
+          return http.Response('{"ok":true}', 200);
+        }),
+      );
+      await client.setToken('expired-clerk-jwt');
+      client.setTokenRefresher(() async => 'fresh-clerk-jwt');
+
+      await client.getJson('/auth/me');
+
+      expect(sentAuth, 'Bearer fresh-clerk-jwt');
+    });
+
+    test('401 retries exactly ONCE with a newly minted token', () async {
+      var calls = 0;
+      var mints = 0;
+      final client = clientWith(
+        MockClient((request) async {
+          calls++;
+          if (request.headers['Authorization'] == 'Bearer expired') {
+            return http.Response('{"detail":"Clerk token has expired"}', 401);
+          }
+          return http.Response('{"ok":true}', 200);
+        }),
+      );
+      client.setTokenRefresher(() async => ++mints == 1 ? 'expired' : 'fresh');
+
+      final body = await client.getJson('/auth/me');
+
+      expect(calls, 2, reason: 'one attempt plus exactly one retry');
+      expect(mints, 2);
+      expect(body, <String, dynamic>{'ok': true});
+    });
+
+    test('does NOT loop when the refresh returns the same expired token',
+        () async {
+      var calls = 0;
+      final client = clientWith(
+        MockClient((request) async {
+          calls++;
+          return http.Response('{"detail":"Clerk token has expired"}', 401);
+        }),
+      );
+      client.setTokenRefresher(() async => 'same-expired-token');
+
+      await expectLater(
+        client.getJson('/auth/me'),
+        throwsA(
+          isA<ApiException>().having((e) => e.statusCode, 'statusCode', 401),
+        ),
+      );
+      expect(calls, 1, reason: 'retrying an identical token just repeats the 401');
+    });
+
+    test('without a refresher, 401 behaviour is unchanged (backend JWT)',
+        () async {
+      var calls = 0;
+      final client = clientWith(
+        MockClient((request) async {
+          calls++;
+          return http.Response('{"detail":"Invalid token"}', 401);
+        }),
+      );
+      await client.setToken('local-jwt');
+
+      await expectLater(client.getJson('/auth/me'), throwsA(isA<ApiException>()));
+      expect(calls, 1);
+    });
+
+    test('a failed refresh falls back to the stored token (no dropped auth)',
+        () async {
+      final client = clientWith(
+        MockClient((request) async => http.Response('{"ok":true}', 200)),
+      );
+      await client.setToken('local-jwt');
+      client.setTokenRefresher(() async => throw Exception('offline'));
+
+      expect(await client.liveToken(), 'local-jwt');
+    });
+
+    test('concurrent requests share ONE mint (no refresh race)', () async {
+      var mints = 0;
+      final client = clientWith(
+        MockClient((request) async => http.Response('{"ok":true}', 200)),
+      );
+      client.setTokenRefresher(() async {
+        mints++;
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        return 'jwt-$mints';
+      });
+
+      await Future.wait(<Future<dynamic>>[
+        client.getJson('/rides/my-rides'),
+        client.getJson('/notifications/'),
+        client.getJson('/payments/mine'),
+        client.getJson('/vehicle/'),
+      ]);
+
+      expect(mints, 1, reason: 'parallel API calls must not mint concurrently');
     });
   });
 }

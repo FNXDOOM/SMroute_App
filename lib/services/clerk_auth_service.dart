@@ -55,7 +55,16 @@ class ClerkAuthService {
   /// CLERK_PUBLISHABLE_KEY — backend-native email/password only).
   static ClerkAuthState? get state => _state;
 
-  static void attach(ClerkAuthState? authState) => _state = authState;
+  static void attach(ClerkAuthState? authState) {
+    _state = authState;
+    // Give every API request a way to ask for the CURRENT session token. Clerk
+    // session JWTs expire in ~60s, so the token must be re-minted per request
+    // (cheap: Clerk's SDK serves its own cached token until it nears expiry)
+    // rather than read once at login/boot and replayed until it 401s.
+    ApiClient.instance.setTokenRefresher(
+      authState == null ? null : refreshSessionToken,
+    );
+  }
 
   /// Whether a Clerk session currently exists (SDK-persisted across restarts).
   static bool get hasClerkSession => _state?.isSignedIn ?? false;

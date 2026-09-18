@@ -12,7 +12,7 @@ enum NotifFilter { all, rides, promos, payments }
 class NotificationProvider extends ChangeNotifier {
   final ApiClient _api = ApiClient.instance;
 
-  void Function(String)? onRideStatusUpdated;
+  void Function(String, int?)? onRideStatusUpdated;
 
   final List<AppNotification> _notifications = [];
   NotifFilter _filter = NotifFilter.all;
@@ -153,8 +153,9 @@ class NotificationProvider extends ChangeNotifier {
     if (_channel != null || _disposed) return;
 
     // Backend requires the JWT as a `token` query param and will close the
-    // socket immediately if it's missing — grab it before connecting.
-    final token = await _api.token;
+    // socket immediately if it's missing — grab a CURRENT one before
+    // connecting (a stored snapshot is stale within a minute).
+    final token = await _api.liveToken();
     if (token == null || token.isEmpty) return;
 
     final wsUrl = _api.baseUrl
@@ -182,10 +183,15 @@ class NotificationProvider extends ChangeNotifier {
 
             if (raw['notification_type'] == 'ride_status_updated') {
               // Backend serializes this field as `notification_metadata`,
-              // not `metadata`.
+              // not `metadata`. related_entity_id is the ride that changed.
               final metadata = raw['notification_metadata'] as Map<String, dynamic>?;
               if (metadata != null && metadata['new_status'] != null) {
-                onRideStatusUpdated?.call(metadata['new_status'].toString());
+                onRideStatusUpdated?.call(
+                  metadata['new_status'].toString(),
+                  int.tryParse(
+                    raw['related_entity_id']?.toString() ?? '',
+                  ),
+                );
               }
             }
           }
