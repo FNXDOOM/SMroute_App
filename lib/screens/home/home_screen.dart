@@ -326,6 +326,18 @@ class _HomeScreenState extends State<HomeScreen> {
                               Navigator.pushNamed(context, '/ride-confirm'),
                           onCancel: _cancelRide,
                           onDismiss: provider.dismissActiveRide,
+                          onPay: () async {
+                            final ok = await provider.payActiveRideFare();
+                            if (!mounted) return;
+                            _snack(
+                              ok
+                                  ? 'Payment successful — your fare has been '
+                                      'received.'
+                                  : (provider.paymentError ??
+                                        'Payment not completed'),
+                              isError: !ok,
+                            );
+                          },
                         ),
                         const SizedBox(height: AppSpacing.lg),
                       ],
@@ -723,6 +735,7 @@ class _ActiveRidePanel extends StatelessWidget {
     required this.onTrack,
     required this.onCancel,
     required this.onDismiss,
+    required this.onPay,
   });
 
   final RideProvider provider;
@@ -730,6 +743,7 @@ class _ActiveRidePanel extends StatelessWidget {
   final VoidCallback onTrack;
   final VoidCallback onCancel;
   final VoidCallback onDismiss;
+  final VoidCallback onPay;
 
   @override
   Widget build(BuildContext context) {
@@ -876,6 +890,26 @@ class _ActiveRidePanel extends StatelessWidget {
             InfoRow(label: 'Destination', value: ride!.destinationLabel),
           ],
           const SizedBox(height: AppSpacing.md),
+          // Website parity: RazorpayPayment renders on the active-ride card
+          // for the whole ride (isRideActive), not only after completion.
+          AppButton(
+            label: provider.paymentPhase == PaymentPhase.paid
+                ? 'Fare paid — thank you'
+                : 'Pay fare · Razorpay',
+            icon: provider.paymentPhase == PaymentPhase.paid
+                ? Icons.check_circle_outline
+                : Icons.payment_outlined,
+            loading: provider.isPaying,
+            onPressed: provider.isPaying ||
+                    provider.paymentPhase == PaymentPhase.paid
+                ? null
+                : onPay,
+          ),
+          if (provider.paymentError != null) ...[
+            const SizedBox(height: AppSpacing.xs),
+            ErrorBanner(message: provider.paymentError!),
+          ],
+          const SizedBox(height: AppSpacing.xs),
           AppButton(
             label: 'Track live',
             icon: Icons.navigation_outlined,
