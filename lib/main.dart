@@ -86,7 +86,7 @@ class SmartRouteApp extends StatelessWidget {
       child: Builder(
         builder: (context) {
           return MaterialApp(
-            title: 'SmartRoute',
+            title: 'Smroute',
             theme: AppTheme.dark,
             debugShowCheckedModeBanner: false,
             initialRoute: '/',

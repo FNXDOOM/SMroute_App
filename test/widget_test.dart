@@ -1,4 +1,4 @@
-// SmartRoute widget tests — verifies critical UI surfaces render correctly.
+// Smroute widget tests — verifies critical UI surfaces render correctly.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -69,7 +69,7 @@ void main() {
       await tester.pumpWidget(_wrapWithProviders(const LoginScreen()));
       await tester.pump();
 
-      expect(find.text('SmartRoute'), findsOneWidget);
+      expect(find.text('Smroute'), findsOneWidget);
       expect(find.textContaining('Welcome back'), findsOneWidget);
     });
 

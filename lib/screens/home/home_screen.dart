@@ -266,7 +266,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ..hideCurrentSnackBar()
             ..showSnackBar(
               const SnackBar(
-                content: Text('Press back again to exit SmartRoute'),
+                content: Text('Press back again to exit Smroute'),
                 duration: Duration(seconds: 2),
               ),
             );
@@ -779,7 +779,7 @@ class _ActiveRidePanel extends StatelessWidget {
             const SizedBox(height: AppSpacing.sm),
             Text(
               completed
-                  ? 'Thanks for riding with SmartRoute.'
+                  ? 'Thanks for riding with Smroute.'
                   : 'No charge was made for this ride.',
               style: AppType.caption.copyWith(color: AppColors.textSecondary),
             ),

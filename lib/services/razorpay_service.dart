@@ -56,7 +56,7 @@ class RazorpayService {
       'order_id': orderId,
       'amount': amount,
       'currency': checkout['currency']?.toString() ?? 'INR',
-      'name': 'SmartRoute',
+      'name': 'Smroute',
       'description': 'Ride fare',
       'theme.color': '#000000',
       if (prefill.isNotEmpty) 'prefill': prefill,

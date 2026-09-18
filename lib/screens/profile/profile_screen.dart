@@ -238,10 +238,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: ListRow(
                     title: user.role == 'driver'
                         ? 'Driver console'
-                        : 'Drive with SmartRoute',
+                        : 'Drive with Smroute',
                     subtitle: user.role == 'driver'
                         ? 'Duty, dispatch board and ride updates'
-                        : 'Apply to drive and earn on SmartRoute',
+                        : 'Apply to drive and earn on Smroute',
                     leading: Container(
                       width: 40,
                       height: 40,

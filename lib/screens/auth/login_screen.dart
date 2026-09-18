@@ -87,7 +87,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(width: AppSpacing.xs),
                   Text(
-                    'SmartRoute',
+                    'Smroute',
                     style: AppType.cardTitle.copyWith(
                       fontWeight: FontWeight.w700,
                     ),

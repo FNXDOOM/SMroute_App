@@ -113,7 +113,7 @@ class _DriverApplyScreenState extends State<DriverApplyScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         PageHeader(
-          title: 'Drive with SmartRoute',
+          title: 'Drive with Smroute',
           description:
               'Apply with your vehicle. Verification is done by operators in '
               'the admin console.',
