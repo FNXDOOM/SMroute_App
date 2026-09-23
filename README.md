@@ -45,7 +45,6 @@ draggable bottom sheet.
 | `/payment` | Payment | Real payment history from `GET /payments/mine` |
 | `/profile` | Profile | Name + phone editing (`PATCH /auth/me`), payment history, sign out |
 | `/driver` | Driver console (role-gated) | Vehicle + duty + GPS push, dispatch board, and the assigned pooled route drawn leg by leg with the next stop called out |
-| `/rating` | Post-ride feedback | Star rating, tag chips, optional comment |
 
 **Primary journey** — book, watch, complete:
 
@@ -82,9 +81,11 @@ Home (pickup + destination + tier)  →  POST /rides/request
 
 **Not implemented (honest gaps)**
 
-- **Post-ride feedback** — `POST /rides/{id}/rating` does not exist on the
-  backend. The screen is best-effort: a 404 is swallowed and the flow completes,
-  so the rating is currently discarded.
+- **Post-ride feedback** — the backend has no rating model, route or column, so
+  the app no longer collects ratings. A previous screen posted to
+  `POST /rides/{id}/rating`, swallowed the resulting 404 and thanked the rider
+  for feedback that was then discarded; it has been removed rather than left to
+  pretend. Reinstating it needs the endpoint first.
 - **Admin portal** — the website's role-gated `AdminView` (driver verification,
   jobs, analytics, demand heatmap) has no app equivalent.
 - **Vector map styling** — the website renders MapLibre from
@@ -248,8 +249,6 @@ Rate limits:     /auth/login 15/5min · /auth/register 5/h · /rides/request 20/
 | Snap to road | `/routing/nearest-road?lat=&lng=` | GET | Yes | – | `{lat,lng}` | Map picker |
 | Road route | `/routing/route?from_lat&from_lng&to_lat&to_lng&traffic` | GET | Yes | – | `{distanceMeters,durationSeconds,geometry:[[lng,lat]]}` | Home, tracking |
 | Map style (site) | `/maps/stadia/style.json` | GET | Yes | – | MapLibre style JSON | Not used (see gaps) |
-
-**Endpoint that does not exist:** `POST /rides/{id}/rating` (see *gaps*).
 
 The backend is **India-guarded**: every ride write and geocode lookup outside
 the India bounding box is rejected (422). The client mirrors that check for a

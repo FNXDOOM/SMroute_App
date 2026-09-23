@@ -364,16 +364,6 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                           const SizedBox(height: AppSpacing.xs),
                           ErrorBanner(message: provider.paymentError!),
                         ],
-                        const SizedBox(height: AppSpacing.xs),
-                        AppButton(
-                          label: 'Rate your ride',
-                          icon: Icons.star_outline,
-                          onPressed: () => Navigator.pushNamedAndRemoveUntil(
-                            context,
-                            '/rating',
-                            (_) => false,
-                          ),
-                        ),
                       ] else
                         AppButton(label: 'Book another ride', onPressed: _home),
                       const SizedBox(height: AppSpacing.xs),

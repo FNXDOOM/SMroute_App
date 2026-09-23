@@ -1385,51 +1385,6 @@ class _Tab extends StatelessWidget {
   }
 }
 
-/// Star input — line icons, the system's amber (`AppColors.warning`) when set,
-/// hairline when empty. Used for post-ride feedback.
-class StarRating extends StatelessWidget {
-  const StarRating({
-    super.key,
-    required this.value,
-    required this.onChanged,
-    this.size = 40,
-    this.enabled = true,
-  });
-
-  final int value;
-  final ValueChanged<int> onChanged;
-  final double size;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        for (var i = 1; i <= 5; i++)
-          PressableScale(
-            onTap: enabled ? () => onChanged(i) : null,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 5),
-              child: AnimatedScale(
-                scale: i == value ? 1.08 : 1.0,
-                duration: AppMotion.fast,
-                curve: AppMotion.enter,
-                child: Icon(
-                  i <= value ? Icons.star_rounded : Icons.star_outline_rounded,
-                  size: size,
-                  color: i <= value
-                      ? AppColors.warning
-                      : AppColors.borderStrong,
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
 /// Selectable chip — site recipe (`rounded-full border`, selected = white on
 /// black). Used for feedback tags and filters.
 class AppChip extends StatelessWidget {

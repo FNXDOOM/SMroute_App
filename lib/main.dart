@@ -20,7 +20,6 @@ import 'screens/driver/driver_console_screen.dart';
 import 'screens/ride/ride_confirm_screen.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/ride/ride_select_screen.dart';
-import 'screens/ride/rating_screen.dart';
 import 'screens/inbox/inbox_screen.dart';
 import 'screens/payment/payment_screen.dart';
 import 'screens/trips/trips_screen.dart';
@@ -145,8 +144,6 @@ class SmartRouteApp extends StatelessWidget {
                       return const RideSelectScreen();
                     case '/ride-confirm':
                       return const RideConfirmScreen();
-                    case '/rating':
-                      return const RatingScreen();
                     case '/inbox':
                       return const InboxScreen();
                     case '/trips':
