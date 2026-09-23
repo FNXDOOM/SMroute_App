@@ -5,11 +5,14 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/assigned_vehicle.dart';
+import '../models/carpool_stage.dart';
 import '../models/ride_option.dart';
 import '../models/ride_request_record.dart';
 import '../models/ride_stage.dart';
+import '../models/shared_route.dart';
 import '../models/vehicle_animation.dart';
 import '../services/api_client.dart';
+import '../services/carpool_service.dart';
 import '../services/geocoding_service.dart';
 import '../services/razorpay_service.dart';
 import '../services/ride_vehicle_animation.dart';
@@ -37,6 +40,7 @@ class PaymentFlowException implements Exception {
 
 class RideProvider extends ChangeNotifier {
   final ApiClient _api = ApiClient.instance;
+  final CarpoolService _carpool = CarpoolService.instance;
 
   String? _destination;
   GeoPoint? _destinationPoint;
@@ -53,6 +57,10 @@ class RideProvider extends ChangeNotifier {
 
   /// Site's "Use live traffic for route and ETA" switch.
   bool _trafficEnabled = false;
+
+  /// Whether this booking may be pooled with other riders (carpool) or is a
+  /// private ride for this passenger alone. Sent as `is_shared` on the request.
+  bool _isShared = true;
 
   /// Road route for the currently selected pickup → destination pair.
   RouteEstimate? _routeEstimate;
@@ -159,6 +167,26 @@ class RideProvider extends ChangeNotifier {
   bool _isPollingStatus = false;
   String? _lastPolledBackendStatus;
 
+  // ── Pooled (shared) route ───────────────────────────────────────────────
+  // `GET /rides/{id}/route` resolves the ride's place on an optimized shared
+  // route. It is only there for rides that went through the pooling pipeline,
+  // and it can appear a few seconds after booking (clustering runs first), so
+  // this is retried on the status tick — not on a timer of its own.
+  String? _sharedRouteRideKey;
+  SharedRoute? _sharedRoute;
+  RouteDisplayMode _routeDisplay = RouteDisplayMode.single;
+  bool _isFetchingSharedRoute = false;
+  int _sharedRouteAttempts = 0;
+  static const int _maxSharedRouteAttempts = 30;
+
+  /// True while the passenger's "I'm at the pickup stop" call is in flight.
+  bool _isConfirmingPickup = false;
+
+  /// Walking geometry from the rider's original pickup to the assigned carpool
+  /// stop. The backend exposes only a distance, so this is fetched from the
+  /// router and is empty until known.
+  List<GeoPoint> _pickupWalkRoute = const [];
+
   // Backend has no automatic job that actually runs route optimization /
   // vehicle assignment for a ride — only a timer-driven status simulation.
   // So a real vehicle may never show up. Stop polling after this many
@@ -179,6 +207,7 @@ class RideProvider extends ChangeNotifier {
   String get pickupLabel => _pickupLabel;
   bool get pickupConfirmed => _pickupConfirmed;
   bool get trafficEnabled => _trafficEnabled;
+  bool get isShared => _isShared;
   RouteEstimate? get routeEstimate => _routeEstimate;
   bool get isLoadingRoute => _isLoadingRoute;
 
@@ -202,6 +231,189 @@ class RideProvider extends ChangeNotifier {
   AssignedVehicle? get assignedVehicle => _assignedVehicle;
   bool get vehicleAssignmentTimedOut => _vehicleAssignmentTimedOut;
   int? get currentRideId => _currentRideId;
+
+  /// The pooled route this ride shares with other passengers, or null when the
+  /// ride is not on an optimized shared route.
+  SharedRoute? get sharedRoute => isRideTerminal ? null : _sharedRoute;
+
+  /// True when there is more than one leg to draw — the only case where the
+  /// single-line/segments toggle is offered.
+  bool get hasSegmentedRoute => (sharedRoute?.isMultiStop ?? false);
+
+  RouteDisplayMode get routeDisplay => _routeDisplay;
+
+  /// Switches the map between the rider's own line and the pooled route's legs.
+  void toggleRouteDisplay() {
+    if (!hasSegmentedRoute) return;
+    _routeDisplay = _routeDisplay == RouteDisplayMode.single
+        ? RouteDisplayMode.segments
+        : RouteDisplayMode.single;
+    notifyListeners();
+  }
+
+  void _resetSharedRoute() {
+    _sharedRouteRideKey = null;
+    _sharedRoute = null;
+    _pickupWalkRoute = const [];
+    _routeDisplay = RouteDisplayMode.single;
+    _isFetchingSharedRoute = false;
+    _sharedRouteAttempts = 0;
+  }
+
+  /// Resolves (once) the pooled route for the active ride. Runs on the existing
+  /// status tick: the ride has to be pooled first, which the backend only does
+  /// after clustering, so a miss is retried for a bounded number of ticks.
+  Future<void> _ensureSharedRoute() async {
+    final rideId = _currentRideId;
+    final ride = activeRideRecord;
+    if (rideId == null || ride == null) return;
+    if (isRideTerminal) return;
+    final key = '$rideId';
+    if (_sharedRouteRideKey == key && _sharedRoute != null) return;
+    if (_sharedRouteAttempts >= _maxSharedRouteAttempts) return;
+    // Nothing has pooled this ride yet — the common single-passenger case.
+    if (ride.virtualStopId == null) return;
+    if (_isFetchingSharedRoute || _disposed) return;
+
+    _isFetchingSharedRoute = true;
+    _sharedRouteAttempts++;
+    try {
+      final json = await _api.getJson('/rides/$rideId/route');
+      if (_disposed || _currentRideId != rideId) return;
+      final route =
+          json is Map<String, dynamic> ? SharedRoute.fromJson(json) : null;
+      _sharedRouteRideKey = key;
+      if (route == null) {
+        // The endpoint answered: this ride has no shared route. Keep the
+        // rider's own line (and let a later re-route be picked up on the
+        // next pooling attempt).
+        _sharedRoute = null;
+        _pickupWalkRoute = const [];
+      } else {
+        final routeChanged = _sharedRoute?.routeId != route.routeId;
+        _sharedRoute = route;
+        if (routeChanged || !route.isMultiStop) {
+          _routeDisplay = RouteDisplayMode.single;
+        }
+      }
+      unawaited(_ensurePickupWalkRoute());
+      notifyListeners();
+    } on ApiException catch (e) {
+      // 404 also covers a backend that predates this endpoint; 403/404 mean
+      // there is nothing more to ask for on this ride.
+      if (e.statusCode == 404 || e.statusCode == 403) {
+        _sharedRouteRideKey = key;
+        _sharedRouteAttempts = _maxSharedRouteAttempts;
+      }
+    } catch (_) {
+      // Transient failure: the next status tick retries.
+    } finally {
+      _isFetchingSharedRoute = false;
+    }
+  }
+
+  /// The passenger's fine carpool stage for the active ride, or null when the
+  /// ride is private / there is no active ride. Backend-authoritative: prefers
+  /// the ride's `carpool_status`, falling back to the coarse status plus the
+  /// pooled route only for older records.
+  CarpoolStage? get carpoolStage {
+    final ride = activeRideRecord;
+    if (ride == null || !ride.isShared) return null;
+    return CarpoolStage.fromRide(
+      status: ride.status,
+      carpoolStatus: ride.carpoolStatus,
+      route: _sharedRoute,
+    );
+  }
+
+  /// True when the passenger may confirm they reached the pickup stop — the
+  /// driver is at (or approaching) it.
+  bool get canConfirmPickupStop => carpoolStage?.canConfirmPickupStop ?? false;
+
+  bool get isConfirmingPickupStop => _isConfirmingPickup;
+
+  /// The stop this passenger walks to, from the pooled route.
+  RouteStop? get myPickupStop => sharedRoute?.myPickupStop;
+
+  /// Walk distance to that stop, as the backend measured it.
+  double? get pickupWalkMeters => sharedRoute?.myPickupStop?.walkMeters;
+
+  /// Walking geometry from the rider's original pickup to the assigned stop,
+  /// or empty until resolved.
+  List<GeoPoint> get pickupWalkRoute => List.unmodifiable(_pickupWalkRoute);
+
+  /// Resolves the walking route to the assigned pickup stop (best effort — the
+  /// backend owns only the distance, so this is the app's own road geometry).
+  Future<void> _ensurePickupWalkRoute() async {
+    final ride = activeRideRecord;
+    final stop = _sharedRoute?.myPickupStop;
+    if (ride == null || stop == null) return;
+    final estimate = await RoutingService.route(
+      from: GeoPoint(ride.pickupLat, ride.pickupLng),
+      to: stop.point,
+    );
+    if (_disposed) return;
+    if (estimate != null && estimate.geometry.length >= 2) {
+      _pickupWalkRoute = estimate.geometry;
+      notifyListeners();
+    }
+  }
+
+  /// Passenger confirms arrival at the assigned pickup stop, then re-reads the
+  /// authoritative ride so the stage advances from the server.
+  Future<bool> confirmAtPickupStop() async {
+    final rideId = _currentRideId;
+    if (rideId == null || _isConfirmingPickup) return false;
+    _isConfirmingPickup = true;
+    _error = null;
+    notifyListeners();
+    try {
+      await _carpool.confirmAtPickupStop(rideId);
+      await refreshActiveRide();
+      return true;
+    } catch (error) {
+      _error = _messageForException(error);
+      notifyListeners();
+      return false;
+    } finally {
+      _isConfirmingPickup = false;
+      notifyListeners();
+    }
+  }
+
+  /// Re-reads the active ride (and its pooled route) from the backend.
+  ///
+  /// Carpool notifications — driver accepted, a co-passenger boarded, the run
+  /// completed — do not all change the coarse status, so the panel must refresh
+  /// from the server rather than infer the new stage. Best effort: a failure
+  /// leaves the status poll to recover.
+  Future<void> refreshActiveRide() async {
+    final rideId = _currentRideId;
+    if (rideId == null || isRideTerminal) return;
+    try {
+      final response = await _api.getJson('/rides/$rideId');
+      if (response is! Map<String, dynamic>) return;
+      if (_disposed || _currentRideId != rideId) return;
+      final record = RideRequestRecord.fromJson(response);
+      final index = _myRides.indexWhere((ride) => ride.id == rideId);
+      if (index == -1) {
+        _myRides.insert(0, record);
+      } else {
+        _myRides[index] = record;
+      }
+      _lastPolledBackendStatus = record.status;
+      final stageFor = _stageForStatus(record.status);
+      if (stageFor != null) _stage = stageFor;
+      // The route view carries driver acceptance and the rider's stage; drop
+      // the cached key so it is re-resolved.
+      _sharedRouteRideKey = null;
+      _sharedRouteAttempts = 0;
+      unawaited(_ensureSharedRoute());
+      notifyListeners();
+    } catch (_) {
+      // Best effort — the status poll is the recovery path.
+    }
+  }
 
   /// The vehicle the map should draw, or null when none should be shown: none
   /// assigned yet, or the ride is over.
@@ -286,6 +498,14 @@ class RideProvider extends ChangeNotifier {
     if (_trafficEnabled == value) return;
     _trafficEnabled = value;
     refreshRoute();
+    notifyListeners();
+  }
+
+  /// Normal (private) vs Carpool (shared). A booking-form choice, read when the
+  /// ride is created — unlike traffic it does not change the route preview.
+  void setIsShared(bool value) {
+    if (_isShared == value) return;
+    _isShared = value;
     notifyListeners();
   }
 
@@ -458,6 +678,15 @@ class RideProvider extends ChangeNotifier {
   @visibleForTesting
   void debugSetVehicle(AssignedVehicle? vehicle) => _assignedVehicle = vehicle;
 
+  /// Test seam for the pooled route the backend resolved for the active ride.
+  @visibleForTesting
+  void debugSetSharedRoute(SharedRoute? route) {
+    _sharedRoute = route;
+    _sharedRouteRideKey = route == null ? null : '$_currentRideId';
+    _sharedRouteAttempts = 0;
+    if (!hasSegmentedRoute) _routeDisplay = RouteDisplayMode.single;
+  }
+
   void _applyStatusToRideRecord(String newStatus) {
     final id = _currentRideId;
     if (id == null) return;
@@ -490,6 +719,7 @@ class RideProvider extends ChangeNotifier {
     _vehiclePollAttempts = 0;
     _vehicleAssignmentTimedOut = false;
     _isFetchingVehicle = false;
+    _resetSharedRoute();
     _stopVehicleTracking();
     notifyListeners();
 
@@ -534,6 +764,7 @@ class RideProvider extends ChangeNotifier {
           'ride_option_id': _selectedOption!.id,
           'ride_option_name': _selectedOption!.name,
           'ride_option_price': _selectedOption!.priceRange,
+          'is_shared': _isShared,
           'pickup_label': pickupLabel,
           'destination_label': _destination,
         },
@@ -649,8 +880,10 @@ class RideProvider extends ChangeNotifier {
     _vehicleAssignmentTimedOut = false;
     _isFetchingVehicle = false;
     _trackingReconnectAttempts = 0;
+    _resetSharedRoute();
     _startStatusPolling();
     _startVehiclePolling();
+    unawaited(_ensureSharedRoute());
   }
 
   void reset() {
@@ -669,6 +902,9 @@ class RideProvider extends ChangeNotifier {
     _vehicleAssignmentTimedOut = false;
     _isFetchingVehicle = false;
     _lastPolledBackendStatus = null;
+    _isShared = true;
+    _resetSharedRoute();
+    _isConfirmingPickup = false;
     _resetRoute();
     _stopVehicleTracking();
     _stopStatusPolling();
@@ -685,6 +921,9 @@ class RideProvider extends ChangeNotifier {
     _isFetchingVehicle = false;
     _lastPolledBackendStatus = null;
     _stage = BookingStage.matching;
+    _isShared = true;
+    _resetSharedRoute();
+    _isConfirmingPickup = false;
     if (_destinationPoint == null) _resetRoute();
     _stopVehicleTracking();
     _stopStatusPolling();
@@ -721,6 +960,9 @@ class RideProvider extends ChangeNotifier {
       // The in-transit animation follows the road route; make sure we have it
       // (no-op once loaded). Runs on the existing 5 s status tick.
       unawaited(ensureActiveRideRoute());
+      // A pooled route can appear once the backend clusters the ride, so this
+      // is retried here rather than on a poller of its own.
+      unawaited(_ensureSharedRoute());
       try {
         final response =
             await _api.getJson('/rides/$_currentRideId');

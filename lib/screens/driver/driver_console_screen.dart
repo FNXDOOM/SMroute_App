@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/ride_request_record.dart';
+import '../../models/shared_route.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/driver_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/live_map.dart';
 import '../../widgets/ui_kit.dart';
 
 /// Driver console — the website's DriverView, translated to mobile:
@@ -255,6 +257,18 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
               ),
               const SizedBox(height: AppSpacing.xl),
 
+              // ── Carpool run entry ────────────────────────────────────────
+              // Carpool riding lives on its own screen; the dashboard below
+              // carries normal (private) rides only.
+              if (provider.hasCarpoolRun) ...[
+                _CarpoolRunEntry(provider: provider),
+                const SizedBox(height: AppSpacing.xl),
+              ] else if (provider.assignedRoute != null) ...[
+                // A private ride's pooled route, drawn for context.
+                _AssignedRoutePanel(provider: provider),
+                const SizedBox(height: AppSpacing.xl),
+              ],
+
               // ── Dispatch board ───────────────────────────────────────────
               SheetHeader(
                 eyebrow: 'Dispatch board',
@@ -274,8 +288,8 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
                   onPressed: provider.load,
                 ),
               ] else ...[
-                if (provider.activeRides.isEmpty &&
-                    provider.pendingRides.isEmpty)
+                if (provider.normalActiveRides.isEmpty &&
+                    provider.normalPendingRides.isEmpty)
                   const EmptyState(
                     icon: Icons.assignment_outlined,
                     title: 'No rides right now',
@@ -284,14 +298,14 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
                         'position so dispatch can route you.',
                   )
                 else ...[
-                  for (final ride in provider.activeRides)
+                  for (final ride in provider.normalActiveRides)
                     _DriverRideCard(
                       ride: ride,
                       busy: provider.isBusy,
                       onAdvance: () => _advance(ride, _nextStatus(ride.status)),
                       onAccept: null,
                     ),
-                  for (final ride in provider.pendingRides)
+                  for (final ride in provider.normalPendingRides)
                     _DriverRideCard(
                       ride: ride,
                       busy: provider.isBusy,
@@ -316,6 +330,146 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
       default:
         return 'completed';
     }
+  }
+}
+
+/// The vehicle's pooled route: the optimized stop sequence as an interactive
+/// map (whole line or leg by leg), then the stop to serve next.
+class _AssignedRoutePanel extends StatelessWidget {
+  const _AssignedRoutePanel({required this.provider});
+
+  final DriverProvider provider;
+
+  @override
+  Widget build(BuildContext context) {
+    final route = provider.assignedRoute!;
+    final next = provider.nextStop;
+    final vehicle = provider.myVehicle;
+    final lat = vehicle?.lat;
+    final lng = vehicle?.lng;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SheetHeader(
+          eyebrow: 'Assigned route',
+          title: 'Your pooled stops',
+          subtitle: '${route.stops.length} stops · '
+              '${(route.distanceMeters / 1000).toStringAsFixed(1)} km pooled',
+          // The problem the solver ran: pdp pools pickups and drop-offs.
+          trailing: StatusBadge(status: route.problem),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        LiveMap(
+          height: 230,
+          cameraPadding: const EdgeInsets.all(32),
+          route: route.geometry,
+          routeSegments: route.legPoints,
+          segmentsMode: provider.routeDisplay == RouteDisplayMode.segments,
+          routeStops: route.stops,
+          // The next stop is drawn in the accent, like the passenger's own.
+          nextStopSequence: next?.stop.sequence,
+          onToggleSegments: provider.hasSegmentedRoute
+              ? provider.toggleRouteDisplay
+              : null,
+          vehicles: [
+            if (lat != null && lng != null)
+              MapVehicle(
+                id: '${vehicle!.id}',
+                lat: lat,
+                lng: lng,
+                label: vehicle.licensePlate,
+              ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        if (next == null)
+          const InfoRow(
+            icon: Icons.check_circle_outline,
+            label: 'No stops left',
+            value: 'Every ride on this route is done.',
+          )
+        else ...[
+          InfoRow(
+            icon: Icons.navigation_outlined,
+            label: 'Next stop',
+            value: 'Stop ${next.stop.sequence + 1} · '
+                '${_stopKind(next.stop)} · ${_rideCount(next.stop)}',
+          ),
+          const SizedBox(height: AppSpacing.xxs),
+          Text(
+            provider.pendingStopCount > 1
+                ? '${_distanceLabel(next)} · '
+                    '${provider.pendingStopCount} stops to go'
+                : '${_distanceLabel(next)} · last stop',
+            style: AppType.small.copyWith(color: AppColors.textSecondary),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Straight-line distance to the stop with the ride's own average speed, so
+  /// the figure is an estimate until a real navigation pass exists.
+  static String _distanceLabel(RouteNextStop next) {
+    final metres = next.distanceMeters;
+    if (metres == null) return 'Waiting for your position';
+    final distance = metres >= 1000
+        ? '${(metres / 1000).toStringAsFixed(1)} km'
+        : '${(metres / 10).round() * 10} m';
+    final minutes = next.minutes;
+    return minutes == null ? distance : '$distance · ~$minutes min';
+  }
+
+  static String _stopKind(RouteStop stop) => switch (stop.waypointType) {
+    'pickup' => 'Pickup',
+    'destination' => 'Drop-off',
+    'depot' => 'Depot',
+    _ => 'Stop',
+  };
+
+  /// Rides served at a stop — the solver pools several onto one boarding stop.
+  static String _rideCount(RouteStop stop) => stop.passengerIds.length == 1
+      ? '1 ride'
+      : '${stop.passengerIds.length} rides';
+}
+
+/// Entry card into the dedicated Carpool Run screen — the only place carpool
+/// riders are driven from, so the normal dashboard never controls them.
+class _CarpoolRunEntry extends StatelessWidget {
+  const _CarpoolRunEntry({required this.provider});
+
+  final DriverProvider provider;
+
+  @override
+  Widget build(BuildContext context) {
+    final route = provider.assignedRoute!;
+    final accepted = provider.carpoolAccepted;
+    void open() => Navigator.pushNamed(context, '/carpool-run');
+
+    return AppCard(
+      onTap: open,
+      emphasis: !accepted,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SheetHeader(
+            eyebrow: 'Carpool',
+            title: accepted ? 'Carpool run in progress' : 'Carpool run assigned',
+            subtitle:
+                '${provider.carpoolRiderCount} / ${provider.carpoolCapacity} passengers · '
+                '${route.stops.length} stops',
+            trailing: StatusBadge(status: accepted ? 'accepted' : 'pending'),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          AppButton(
+            label: accepted ? 'Open Carpool Run' : 'Review & accept run',
+            icon: Icons.alt_route,
+            onPressed: open,
+          ),
+        ],
+      ),
+    );
   }
 }
 

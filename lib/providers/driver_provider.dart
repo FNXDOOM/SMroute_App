@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../models/carpool_stage.dart';
 import '../models/ride_request_record.dart';
+import '../models/shared_route.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_client.dart';
+import '../services/carpool_service.dart';
 import '../services/driver_service.dart';
 import '../services/geocoding_service.dart';
 
@@ -29,6 +33,7 @@ class DriverProvider extends ChangeNotifier {
   // ignore: use_setters_to_change_properties
   void refreshAuth(AuthProvider auth) => _auth = auth;
   final DriverService _service = DriverService.instance;
+  final CarpoolService _carpool = CarpoolService.instance;
 
   List<DriverVehicle> _vehicles = [];
   DriverVehicle? _myVehicle;
@@ -38,6 +43,49 @@ class DriverProvider extends ChangeNotifier {
   bool _isUpdatingLocation = false;
   String? _error;
   bool _isLoaded = false;
+  bool _disposed = false;
+
+  // ── Assigned pooled route ─────────────────────────────────────────────────
+  // The optimizer writes the route's id onto the vehicle row, so the console
+  // can draw the same pooled route the passengers on it see. Resolved on the
+  // existing board poll (no timer of its own) and re-resolved whenever the
+  // vehicle's assignment changes.
+  String? _routeKey;
+  SharedRoute? _assignedRoute;
+  RouteDisplayMode _routeDisplay = RouteDisplayMode.single;
+  bool _isFetchingRoute = false;
+
+  /// Statuses that mean "this ride still needs driving".
+  static const Set<String> _liveRideStatuses = {
+    'pending',
+    'assigned',
+    'arriving',
+    'in_progress',
+  };
+
+  static const Set<String> _activeRideStatuses = {
+    'assigned',
+    'arriving',
+    'in_progress',
+  };
+
+  /// Test seam: install the route the console would have fetched.
+  @visibleForTesting
+  void debugSetAssignedRoute(SharedRoute? route) {
+    _routeKey = route?.routeId;
+    _assignedRoute = route;
+    _routeDisplay = RouteDisplayMode.single;
+    notifyListeners();
+  }
+
+  /// Test seam: install the polled dispatch board (and, once, the vehicle this
+  /// driver controls).
+  @visibleForTesting
+  void debugSetBoard(List<RideRequestRecord> board, {DriverVehicle? vehicle}) {
+    _board = board;
+    if (vehicle != null) _myVehicle = vehicle;
+    notifyListeners();
+  }
 
   // Website parity (DriverView.refreshRides): the dispatch board is polled
   // so new pending requests appear without a manual refresh. Failures keep
@@ -57,18 +105,205 @@ class DriverProvider extends ChangeNotifier {
 
   /// Rides a driver can act on, newest first (site: "Dispatch board").
   List<RideRequestRecord> get activeRides {
-    const activeStatuses = {'assigned', 'arriving', 'in_progress'};
     final rides = _board
-        .where((r) => activeStatuses.contains(r.status))
+        .where((r) => _activeRideStatuses.contains(r.status))
         .toList()
       ..sort((a, b) => b.id.compareTo(a.id));
     return rides;
+  }
+
+  /// The pooled route this driver's vehicle is running, or null when the
+  /// optimizer has not assigned one (the common single-passenger case).
+  SharedRoute? get assignedRoute => _assignedRoute;
+
+  /// True when there is more than one leg to draw — the only case where the
+  /// map's single-line / legs toggle is offered.
+  bool get hasSegmentedRoute => _assignedRoute?.isMultiStop ?? false;
+
+  RouteDisplayMode get routeDisplay => _routeDisplay;
+
+  /// The vehicle's last reported position, or null before the first GPS push.
+  GeoPoint? get vehiclePoint {
+    final lat = _myVehicle?.lat;
+    final lng = _myVehicle?.lng;
+    if (lat == null || lng == null) return null;
+    return GeoPoint(lat, lng);
+  }
+
+  /// The next stop to serve, in route order, with the distance from the vehicle.
+  ///
+  /// Stops are the pooled route's own stop list, and a ride counts as served
+  /// once the board reports it as terminal — so completing a ride advances the
+  /// callout to the following stop on the next poll.
+  RouteNextStop? get nextStop {
+    final route = _assignedRoute;
+    if (route == null) return null;
+    final finished = <int>{
+      for (final ride in _board)
+        if (!_liveRideStatuses.contains(ride.status)) ride.id,
+    };
+    return route.nextPendingStop(
+      finishedRideIds: finished,
+      from: vehiclePoint,
+    );
+  }
+
+  /// Stops still to be served, in visit order (the next stop included).
+  int get pendingStopCount {
+    final route = _assignedRoute;
+    if (route == null) return 0;
+    final finished = <int>{
+      for (final ride in _board)
+        if (!_liveRideStatuses.contains(ride.status)) ride.id,
+    };
+    var count = 0;
+    for (final stop in route.stops) {
+      if (stop.isDepot || stop.passengerIds.isEmpty) continue;
+      if (stop.passengerIds.any((rideId) => !finished.contains(rideId))) count++;
+    }
+    return count;
+  }
+
+  /// Switches the console map between the whole pooled line and its legs.
+  void toggleRouteDisplay() {
+    if (!hasSegmentedRoute) return;
+    _routeDisplay = _routeDisplay == RouteDisplayMode.single
+        ? RouteDisplayMode.segments
+        : RouteDisplayMode.single;
+    notifyListeners();
   }
 
   List<RideRequestRecord> get pendingRides {
     final rides = _board.where((r) => r.status == 'pending').toList()
       ..sort((a, b) => b.id.compareTo(a.id));
     return rides;
+  }
+
+  // ── Carpool run (driver) ──────────────────────────────────────────────────
+  // The normal dispatch board carries private rides only; a carpool run is
+  // driven from the dedicated Carpool Run screen, whose actions live here.
+
+  /// Private rides only — what the normal dashboard must show.
+  List<RideRequestRecord> get normalActiveRides => _board
+      .where((r) => !r.isShared && _activeRideStatuses.contains(r.status))
+      .toList()
+    ..sort((a, b) => b.id.compareTo(a.id));
+
+  List<RideRequestRecord> get normalPendingRides => _board
+      .where((r) => !r.isShared && r.status == 'pending')
+      .toList()
+    ..sort((a, b) => b.id.compareTo(a.id));
+
+  /// True when the assigned route is a carpool run.
+  bool get hasCarpoolRun => _assignedRoute?.isCarpoolRun ?? false;
+
+  /// Whether the driver has accepted the assigned carpool run.
+  bool get carpoolAccepted => _assignedRoute?.driverAccepted ?? false;
+
+  /// Rides served by the assigned carpool route, in rider-id order.
+  List<RideRequestRecord> get carpoolRides {
+    final route = _assignedRoute;
+    if (route == null) return const [];
+    final rideIds = <int>{
+      for (final stop in route.stops) ...stop.passengerIds,
+    };
+    if (rideIds.isEmpty) return const [];
+    return _board
+        .where((ride) => ride.isShared && rideIds.contains(ride.id))
+        .toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
+  }
+
+  /// Riders on the run, for the "2 / 3 passengers" header.
+  int get carpoolRiderCount => carpoolRides.length;
+
+  int get carpoolCapacity => math.min(3, _myVehicle?.capacity ?? 3);
+
+  /// Riders currently onboard (boarded or in transit).
+  int get carpoolOnboardCount => carpoolRides
+      .where((ride) => const {'boarded', 'in_transit'}.contains(ride.carpoolStatus))
+      .length;
+
+  /// This rider's fine carpool stage.
+  CarpoolStage carpoolStageFor(RideRequestRecord ride) => CarpoolStage.fromRide(
+        status: ride.status,
+        carpoolStatus: ride.carpoolStatus,
+        route: _assignedRoute,
+      );
+
+  String? get _carpoolRouteId => _assignedRoute?.routeId;
+
+  /// Runs one carpool action, then refreshes the board and forces the route to
+  /// be re-read (the action changes route metadata, which the cached plan would
+  /// otherwise hide until the assignment itself changed).
+  Future<bool> _runCarpoolAction(Future<void> Function() action) async {
+    if (_isBusy) return false;
+    _isBusy = true;
+    notifyListeners();
+    try {
+      await action();
+      _routeKey = null; // force `_ensureAssignedRoute` to re-fetch
+      await _refreshBoard(silent: true);
+      return true;
+    } catch (error) {
+      _error = error is ApiException
+          ? error.message
+          : 'Could not update the carpool run.';
+      return false;
+    } finally {
+      _isBusy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Driver accepts the assigned carpool run (closes it to new riders).
+  Future<bool> acceptCarpoolRun() {
+    final routeId = _carpoolRouteId;
+    if (routeId == null) return Future.value(false);
+    return _runCarpoolAction(() => _carpool.acceptRoute(routeId));
+  }
+
+  /// Driver starts heading to a rider's pickup stop.
+  Future<bool> announcePickup(RideRequestRecord ride) {
+    final routeId = _carpoolRouteId;
+    if (routeId == null) return Future.value(false);
+    return _runCarpoolAction(() => _carpool.announcePickup(routeId, ride.id));
+  }
+
+  /// Driver reached the pickup stop.
+  Future<bool> markArrived(RideRequestRecord ride) {
+    final routeId = _carpoolRouteId;
+    if (routeId == null) return Future.value(false);
+    return _runCarpoolAction(() => _carpool.markArrived(routeId, ride.id));
+  }
+
+  /// Driver confirmed the rider boarded.
+  Future<bool> confirmBoarded(RideRequestRecord ride) {
+    final routeId = _carpoolRouteId;
+    if (routeId == null) return Future.value(false);
+    return _runCarpoolAction(() => _carpool.confirmBoarded(routeId, ride.id));
+  }
+
+  /// Driver starts driving: every boarded rider moves to IN_TRANSIT.
+  Future<bool> departCarpoolRun() {
+    final routeId = _carpoolRouteId;
+    if (routeId == null) return Future.value(false);
+    return _runCarpoolAction(() => _carpool.depart(routeId));
+  }
+
+  /// Driver confirmed one rider was dropped off.
+  Future<bool> confirmDropoff(RideRequestRecord ride) {
+    final routeId = _carpoolRouteId;
+    if (routeId == null) return Future.value(false);
+    return _runCarpoolAction(() => _carpool.confirmDropoff(routeId, ride.id));
+  }
+
+  /// Driver confirms the final drop-off; the backend refuses until every rider
+  /// is dropped off.
+  Future<bool> completeCarpoolRun() {
+    final routeId = _carpoolRouteId;
+    if (routeId == null) return Future.value(false);
+    return _runCarpoolAction(() => _carpool.completeRoute(routeId));
   }
 
   /// Website parity (DriverView): new pending requests toast as they appear
@@ -86,25 +321,11 @@ class DriverProvider extends ChangeNotifier {
         _service.listVehicles(),
         _service.fetchBoard(),
       ]);
-      _vehicles = results[0] as List<DriverVehicle>;
       _board = results[1] as List<RideRequestRecord>;
       _isLoaded = true;
+      _applyVehicles(results[0] as List<DriverVehicle>);
 
-      // Keep "my vehicle" if still valid, else auto-select the one
-      // registered to this driver (site: pre-selected dropdown).
-      final userId = _auth.currentUser?.id;
-      if (_myVehicle != null &&
-          !_vehicles.any((v) => v.id == _myVehicle!.id)) {
-        _myVehicle = null;
-      }
-      if (_myVehicle == null && userId != null) {
-        for (final v in _vehicles) {
-          if (v.driverUserId == userId) {
-            _myVehicle = v;
-            break;
-          }
-        }
-      }
+      await _ensureAssignedRoute();
     } catch (error) {
       _error = error is ApiException
           ? error.message
@@ -121,7 +342,81 @@ class DriverProvider extends ChangeNotifier {
   void selectVehicle(DriverVehicle vehicle) {
     _myVehicle = vehicle;
     _error = null;
+    // Another vehicle means another route (or none) — drop the old drawing and
+    // resolve the new assignment straight away.
+    _resetAssignedRoute();
     notifyListeners();
+    _ensureAssignedRoute();
+  }
+
+  /// Adopts a fresh vehicle list, keeping "my vehicle" if it still exists and
+  /// else falling back to the one registered to this driver (site: the
+  /// pre-selected dropdown). Always points at the newest row, so a route the
+  /// optimizer just assigned is picked up.
+  void _applyVehicles(List<DriverVehicle> vehicles) {
+    _vehicles = vehicles;
+    final selectedId = _myVehicle?.id;
+    if (selectedId != null) {
+      for (final vehicle in _vehicles) {
+        if (vehicle.id == selectedId) {
+          _myVehicle = vehicle;
+          return;
+        }
+      }
+      _myVehicle = null;
+    }
+    final userId = _auth.currentUser?.id;
+    if (userId == null) return;
+    for (final vehicle in _vehicles) {
+      if (vehicle.driverUserId == userId) {
+        _myVehicle = vehicle;
+        return;
+      }
+    }
+  }
+
+  void _resetAssignedRoute() {
+    if (_routeKey == null && _assignedRoute == null) return;
+    _routeKey = null;
+    _assignedRoute = null;
+    _routeDisplay = RouteDisplayMode.single;
+  }
+
+  /// Resolves the vehicle's pooled route, once per assignment.
+  ///
+  /// Best effort: a plan this driver may not read (403), one that is gone (404)
+  /// or a transient failure leaves the console on the dispatch board and the
+  /// next poll retries — the dispatch job may not have finished writing the
+  /// route when the vehicle row first shows its id.
+  Future<void> _ensureAssignedRoute() async {
+    final routeId = _myVehicle?.assignedRouteId;
+    if (routeId == null || routeId.isEmpty) {
+      if (_assignedRoute != null || _routeKey != null) {
+        _resetAssignedRoute();
+        notifyListeners();
+      }
+      return;
+    }
+    // A stored key with no route means the fetch failed: retry it.
+    if (_routeKey == routeId && _assignedRoute != null) return;
+    if (_isFetchingRoute || _disposed) return;
+
+    _isFetchingRoute = true;
+    try {
+      final plan = await _service.fetchRoutePlan(routeId);
+      if (_disposed) return;
+      final route = plan == null ? null : SharedRoute.fromRoutePlanJson(plan);
+      final routeChanged = route?.routeId != _assignedRoute?.routeId;
+      _routeKey = routeId;
+      _assignedRoute = route;
+      // A new route (or one with nothing to segment) starts on the whole line.
+      if (routeChanged || !(route?.isMultiStop ?? false)) {
+        _routeDisplay = RouteDisplayMode.single;
+      }
+      notifyListeners();
+    } finally {
+      _isFetchingRoute = false;
+    }
   }
 
   /// Go on duty (active) / off duty (idle) — site `toggleDuty`.
@@ -131,30 +426,12 @@ class DriverProvider extends ChangeNotifier {
     _isBusy = true;
     notifyListeners();
     try {
-      await _service.setVehicleStatus(vehicle.id, onDuty ? 'active' : 'idle');
-      _myVehicle = DriverVehicle(
-        id: vehicle.id,
-        licensePlate: vehicle.licensePlate,
-        capacity: vehicle.capacity,
-        status: onDuty ? 'active' : 'idle',
-        driverUserId: vehicle.driverUserId,
-        lat: vehicle.lat,
-        lng: vehicle.lng,
-      );
+      final status = onDuty ? 'active' : 'idle';
+      await _service.setVehicleStatus(vehicle.id, status);
+      _myVehicle = vehicle.copyWith(status: status);
       _vehicles = [
         for (final v in _vehicles)
-          if (v.id == vehicle.id)
-            DriverVehicle(
-              id: v.id,
-              licensePlate: v.licensePlate,
-              capacity: v.capacity,
-              status: onDuty ? 'active' : 'idle',
-              driverUserId: v.driverUserId,
-              lat: v.lat,
-              lng: v.lng,
-            )
-          else
-            v,
+          if (v.id == vehicle.id) v.copyWith(status: status) else v,
       ];
       return true;
     } catch (error) {
@@ -194,12 +471,7 @@ class DriverProvider extends ChangeNotifier {
         vehicleId: vehicle.id,
         position: GeoPoint(position.latitude, position.longitude),
       );
-      _myVehicle = DriverVehicle(
-        id: vehicle.id,
-        licensePlate: vehicle.licensePlate,
-        capacity: vehicle.capacity,
-        status: vehicle.status,
-        driverUserId: vehicle.driverUserId,
+      _myVehicle = vehicle.copyWith(
         lat: position.latitude,
         lng: position.longitude,
       );
@@ -268,6 +540,11 @@ class DriverProvider extends ChangeNotifier {
           .map((r) => r.id)
           .toSet();
       _board = await _service.fetchBoard();
+      // The optimizer writes the route id onto the vehicle row out of band, so
+      // the same tick has to re-read it — otherwise the console would only ever
+      // see a pooled route the driver explicitly refreshed for.
+      await _refreshVehicles();
+      await _ensureAssignedRoute();
       if (onNewPendingRide != null) {
         for (final ride in _board) {
           if (ride.status == 'pending' && !previousPending.contains(ride.id)) {
@@ -278,6 +555,16 @@ class DriverProvider extends ChangeNotifier {
       notifyListeners();
     } catch (_) {
       // Silent refresh — the next explicit load surfaces errors.
+    }
+  }
+
+  /// Best effort: the board still refreshes when the vehicle list fails, and
+  /// the next tick retries.
+  Future<void> _refreshVehicles() async {
+    try {
+      _applyVehicles(await _service.listVehicles());
+    } catch (_) {
+      // Ignored — see above.
     }
   }
 
@@ -307,6 +594,7 @@ class DriverProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _boardPollTimer?.cancel();
     _boardPollTimer = null;
     super.dispose();

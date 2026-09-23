@@ -41,10 +41,6 @@ class RideVehicleAnimation {
   /// Pickup → destination leg.
   static const Duration _inTransitDuration = Duration(seconds: 18);
 
-  /// Approach when a real vehicle position is known — the site uses 8 s here,
-  /// not the synthetic duration.
-  static const Duration _liveApproachDuration = Duration(seconds: 8);
-
   /// The animation for [status], or null when no vehicle should be drawn.
   ///
   /// Null for `pending`/`clustered` (no driver is assigned yet — the site shows
@@ -60,34 +56,35 @@ class RideVehicleAnimation {
     final key = (status ?? '').toLowerCase();
     if (pickup == null) return null;
 
-    final live = _livePoint(vehicle);
+    // Real telemetry wins outright: when a vehicle has a live position the
+    // map's tracking layer draws it (LiveMap's `vehicles`), so this derivation
+    // must return nothing rather than fabricate a second, simulated path that
+    // would hijack that marker. The stand-in car is only for the (common) case
+    // where the backend reports no vehicle position at all.
+    if (_livePoint(vehicle) != null) return null;
 
     switch (key) {
       case 'assigned':
       case 'arriving':
         final arriving = key == 'arriving';
-        final start = live ??
-            _offsetFrom(
-              pickup,
-              arriving ? _arrivingOffset : _assignedOffset,
-            );
+        final start = _offsetFrom(
+          pickup,
+          arriving ? _arrivingOffset : _assignedOffset,
+        );
         final path = <GeoPoint>[start, pickup];
         return VehicleAnimation(
-          vehicleId: live != null ? '${vehicle!.id}' : simulatedVehicleId,
-          key: _key(live != null ? '${vehicle!.id}' : simulatedVehicleId, key, path),
+          vehicleId: simulatedVehicleId,
+          key: _key(simulatedVehicleId, key, path),
           path: path,
-          duration: live != null
-              ? _liveApproachDuration
-              : (arriving ? _arrivingDuration : _assignedDuration),
+          duration: arriving ? _arrivingDuration : _assignedDuration,
         );
 
       case 'in_progress':
         final path = _pickupToDestination(routeGeometry, pickup, destination);
         if (path == null) return null;
-        final id = live != null ? '${vehicle!.id}' : simulatedVehicleId;
         return VehicleAnimation(
-          vehicleId: id,
-          key: _key(id, key, path),
+          vehicleId: simulatedVehicleId,
+          key: _key(simulatedVehicleId, key, path),
           path: path,
           duration: _inTransitDuration,
         );

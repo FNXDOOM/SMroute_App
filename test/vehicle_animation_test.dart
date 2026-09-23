@@ -281,23 +281,31 @@ void main() {
       expect(build('in_progress', to: null), isNull);
     });
 
-    test('a real vehicle position beats the synthetic start point', () {
-      final animation = build(
-        'assigned',
-        vehicle: AssignedVehicle(
-          id: 7,
-          licensePlate: 'KA01AB1234',
-          status: 'active',
-          lat: 12.99,
-          lng: 77.58,
+    test('a real vehicle position suppresses the simulated car entirely', () {
+      // The map's tracking layer owns a vehicle that has a live position, so
+      // this derivation must return nothing rather than fabricate a path that
+      // would hijack that marker. Applies to every stage, including transit.
+      final real = AssignedVehicle(
+        id: 7,
+        licensePlate: 'KA01AB1234',
+        status: 'active',
+        lat: 12.99,
+        lng: 77.58,
+      );
+      expect(build('assigned', vehicle: real), isNull);
+      expect(build('arriving', vehicle: real), isNull);
+      expect(
+        build(
+          'in_progress',
+          route: const [
+            GeoPoint(12.9716, 77.5946),
+            GeoPoint(12.95, 77.60),
+            GeoPoint(12.9352, 77.6245),
+          ],
+          vehicle: real,
         ),
-      )!;
-      expect(animation.vehicleId, '7');
-      expect(animation.path.first.lat, closeTo(12.99, 1e-12));
-      expect(animation.path.first.lng, closeTo(77.58, 1e-12));
-      expect(animation.path.last.lat, closeTo(pickup.lat, 1e-12));
-      // Site parity: a known position approaches over 8 s, not 25 s.
-      expect(animation.duration, const Duration(seconds: 8));
+        isNull,
+      );
     });
 
     test('a vehicle with unusable coordinates falls back to the simulation',

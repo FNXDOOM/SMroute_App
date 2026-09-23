@@ -44,6 +44,7 @@ draggable bottom sheet.
 | `/inbox` | Notifications | Real notifications, filters, mark-one/mark-all read, WebSocket push |
 | `/payment` | Payment | Real payment history from `GET /payments/mine` |
 | `/profile` | Profile | Name + phone editing (`PATCH /auth/me`), payment history, sign out |
+| `/driver` | Driver console (role-gated) | Vehicle + duty + GPS push, dispatch board, and the assigned pooled route drawn leg by leg with the next stop called out |
 | `/rating` | Post-ride feedback | Star rating, tag chips, optional comment |
 
 **Primary journey** — book, watch, complete:
@@ -108,7 +109,26 @@ Home (pickup + destination + tier)  →  POST /rides/request
   on/off duty via `PATCH /vehicle/{id}`, GPS position push via
   `POST /tracking/vehicles/{id}/location`, dispatch board via `GET /rides/`,
   and accept → arriving → in_progress → completed via `PATCH /rides/{id}/status`
-  (completing returns the vehicle to idle, like the site).
+  (completing returns the vehicle to idle, like the site). The console also draws
+  the vehicle's **assigned pooled route** (see below) with the next stop called
+  out, refreshed on the same 6 s board poll.
+- **Pooled (shared) ride** — when the backend pools a ride into an optimized
+  route, `GET /rides/{id}/route` gives the app the whole route: every stop in
+  visit order, the drive split per leg, and which legs are the rider's own. A chip
+  on the map switches between the rider's own pickup → drop-off line and the
+  pooled route's legs (the chip is offered only when there is more than one leg),
+  with numbered stop pins and the rider's own leg in the accent colour.
+  `problem: "pdp"` means the route pools pickups *and* drop-offs; the older
+  `cvrp` fallback returns to the hub and has no per-rider drop-off.
+- **Driver's pooled route** — the console's route panel is fed by
+  `GET /route/history/{id}` (the route id sits on the vehicle row), mapped through
+  the same model the passenger view uses, so one map and one toggle serve both.
+  The driver's plan additionally names the rides at each stop, which is what makes
+  the **next stop to serve** callout possible: the first stop whose rides are not
+  yet terminal, with the straight-line distance from the vehicle's last pushed
+  position and an ETA from the route's own average speed. Completing a ride
+  advances the callout on the next poll. The passenger view keeps other riders
+  private and so never shows it.
 
 **Deliberately absent** — no mock fallbacks anywhere: a failing backend produces
 an error or empty state, never fabricated data. Wallet balances, stored cards
@@ -138,10 +158,14 @@ endpoints and the website has no such features.
 1. **Flutter SDK** 3.x — verify with `flutter doctor`
 2. **Android Studio** or VS Code with the Flutter/Dart extensions
 3. **A device or emulator** (or a physical phone with USB debugging)
-4. **The existing backend running** (`finalyr_project/backend`):
+4. **The existing backend running** (`finalyr_project/backend`) — its imports are
+   flat, so uvicorn must run from inside `backend/` (or use the project-root
+   `main.py`, which puts `backend/` on `sys.path`):
    ```bash
-   uvicorn backend.main:app --reload     # http://localhost:8000
+   cd finalyr_project/backend
+   uvicorn main:app --reload --port 8000   # http://localhost:8000
    ```
+   `uvicorn backend.main:app` fails with `ModuleNotFoundError: No module named 'database'`.
 
 > On the Android emulator, `127.0.0.1` is the emulator itself — use
 > `http://10.0.2.2:8000`. On a physical device use your machine's LAN IP or the
@@ -212,6 +236,8 @@ Rate limits:     /auth/login 15/5min · /auth/register 5/h · /rides/request 20/
 | Ride status | `/rides/{id}` | GET | Yes | – | `RideRequestResponse` | Home, tracking |
 | Cancel ride | `/rides/{id}` | DELETE | Yes | – | `{status:...}` | Home, tracking, trip detail |
 | Assigned vehicle | `/rides/{id}/vehicle` | GET | Yes | – | `VehicleSnapshot` or `null` | Tracking |
+| Pooled route (rider) | `/rides/{id}/route` | GET | Yes | – | `RideRouteResponse` or `null` (stops, per-leg geometry, `my_leg_indices`) | Home, tracking |
+| Pooled route (driver) | `/route/history/{id}` | GET | Yes (admin/driver) | – | Route plan: `waypoints[]` with `passenger_ids`, `geometry`, `legs[]`, `problem` | Driver console |
 | Live tracking | `/tracking/ws?token=` | WS | Yes | – | `{type:"tracking_snapshot"\|"vehicle_location_update",...}` | Tracking |
 | Notifications | `/notifications/?limit=100` | GET | Yes | – | `{status,unread_count,notifications[]}` | Inbox, badge |
 | Mark all read | `/notifications/read-all` | PATCH | Yes | – | `{status,updated_count}` | Inbox |
@@ -386,7 +412,8 @@ lib/
 ├── theme/app_theme.dart         # design tokens + ThemeData
 ├── models/                      # user, ride_option, ride_request_record,
 │                                # ride_stage, assigned_vehicle, notification,
-│                                # payment_transaction, mock_data (tier catalogue)
+│                                # payment_transaction, shared_route (pooled
+│                                # route, its legs and stops), mock_data
 ├── providers/                   # auth, ride (booking/polling/tracking),
 │                                # notification, payment
 ├── services/                    # api_client, geocoding, location, routing,
@@ -397,7 +424,12 @@ lib/
 │                                # profile, driver (console + apply)
 └── widgets/                     # ui_kit + live_map, bottom_nav_bar,
                                  # ride_option_card, notification_tile
-test/widget_test.dart            # widget + provider tests (36)
+test/                            # 113 widget, provider and model tests
+├── widget_test.dart             # screens, providers, ride lifecycle
+├── shared_route_test.dart       # pooled route, next stop, leg rendering
+├── backend_contract_test.dart   # API payload shapes
+├── live_map_motion_test.dart    # vehicle walk and retarget
+└── vehicle_animation_test.dart  # ride status → animated path
 ```
 
 ---
@@ -407,7 +439,7 @@ test/widget_test.dart            # widget + provider tests (36)
 ```bash
 flutter pub get
 flutter analyze                     # must report "No issues found!"
-flutter test                        # 36 tests
+flutter test                        # 113 tests
 
 # Run on an emulator against your local backend (or use config.local.json)
 flutter run --dart-define-from-file=config.dev.json

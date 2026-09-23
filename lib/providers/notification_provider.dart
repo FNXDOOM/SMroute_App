@@ -14,6 +14,11 @@ class NotificationProvider extends ChangeNotifier {
 
   void Function(String, int?)? onRideStatusUpdated;
 
+  /// Fires for carpool lifecycle notifications (`carpool_*`, `route_assigned`,
+  /// `route_reassigned`) so the active ride can re-read the authoritative
+  /// stage from the backend — several of these don't change the coarse status.
+  void Function(String type, int? relatedId)? onCarpoolEvent;
+
   final List<AppNotification> _notifications = [];
   NotifFilter _filter = NotifFilter.all;
   bool _isLoading = false;
@@ -191,6 +196,16 @@ class NotificationProvider extends ChangeNotifier {
                   int.tryParse(
                     raw['related_entity_id']?.toString() ?? '',
                   ),
+                );
+              }
+            } else {
+              final type = raw['notification_type']?.toString() ?? '';
+              if (type.startsWith('carpool_') ||
+                  type == 'route_assigned' ||
+                  type == 'route_reassigned') {
+                onCarpoolEvent?.call(
+                  type,
+                  int.tryParse(raw['related_entity_id']?.toString() ?? ''),
                 );
               }
             }

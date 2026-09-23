@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../../models/mock_data.dart';
 import '../../models/ride_request_record.dart';
 import '../../models/ride_stage.dart';
+import '../../models/shared_route.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/notification_provider.dart';
 import '../../providers/ride_provider.dart';
@@ -14,6 +15,7 @@ import '../../services/geocoding_service.dart';
 import '../../services/location_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/bottom_nav_bar.dart';
+import '../../widgets/carpool_passenger_panel.dart';
 import '../../widgets/live_map.dart';
 import '../../widgets/ride_option_card.dart';
 import '../../widgets/ui_kit.dart';
@@ -240,6 +242,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final provider = context.watch<RideProvider>();
     final active = provider.activeRideRecord;
     final hasRide = provider.currentRideId != null;
+    // Fraction of the map the booking/live panel covers at rest. Shared with
+    // the map so its route-mode chip sits above the panel, not behind it.
+    final sheetFraction = hasRide ? 0.56 : 0.52;
 
     // Authoritative map geometry: the live booking selection, falling back to
     // the ride record hours-old state can't reproduce (e.g. restart mid-ride).
@@ -281,28 +286,51 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Expanded(
               child: MapFirstScaffold(
-                map: LiveMap(
-                  fullBleed: true,
-                  pickup: pickupPoint,
-                  destination: destPoint,
-                  route: provider.routeEstimate?.geometry ?? const [],
-                  vehicles: hasVehicle
-                      ? [
-                          MapVehicle(
-                            id: '${vehicle!.id}',
-                            lat: vehicle.lat!,
-                            lng: vehicle.lng!,
-                            label: vehicle.licensePlate,
-                          ),
-                        ]
-                      : const [],
-                  // Drives the car from the ride status (see RideVehicleAnimation)
-                  // — without this the map only ever shows a vehicle the backend
-                  // has a record for, which is usually none of them.
-                  vehicleAnimation: provider.vehicleAnimation,
-                  initialCenter: pickupPoint ?? GeocodingService.defaultPickup,
-                  attribution: false,
-                  cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),
+                map: LayoutBuilder(
+                  builder: (context, constraints) => LiveMap(
+                    fullBleed: true,
+                    pickup: pickupPoint,
+                    destination: destPoint,
+                    route: provider.routeEstimate?.geometry ?? const [],
+                    // Pooled ride: the shared route's legs + numbered stops, with
+                    // the toggle that switches the map between the two drawings.
+                    routeSegments: provider.sharedRoute?.legPoints,
+                    segmentsMode:
+                        provider.routeDisplay == RouteDisplayMode.segments,
+                    routeStops: provider.sharedRoute?.stops ?? const [],
+                    mySegmentIndices:
+                        provider.sharedRoute?.myLegIndices ?? const [],
+                    // The walk from the rider's pickup to the assigned carpool
+                    // stop, when one has been resolved.
+                    walkRoute: provider.pickupWalkRoute,
+                    onToggleSegments: provider.hasSegmentedRoute
+                        ? provider.toggleRouteDisplay
+                        : null,
+                    // The panel covers the map's lower edge — keep the chip
+                    // above it so it stays visible and tappable.
+                    bottomControlsInset:
+                        constraints.maxHeight * sheetFraction,
+                    vehicles: hasVehicle
+                        ? [
+                            MapVehicle(
+                              id: '${vehicle!.id}',
+                              lat: vehicle.lat!,
+                              lng: vehicle.lng!,
+                              label: vehicle.licensePlate,
+                            ),
+                          ]
+                        : const [],
+                    // Drives the car from the ride status (see
+                    // RideVehicleAnimation) — without this the map only ever
+                    // shows a vehicle the backend has a record for, which is
+                    // usually none of them.
+                    vehicleAnimation: provider.vehicleAnimation,
+                    initialCenter:
+                        pickupPoint ?? GeocodingService.defaultPickup,
+                    attribution: false,
+                    cameraPadding:
+                        const EdgeInsets.fromLTRB(48, 132, 48, 300),
+                  ),
                 ),
                 topBar: _MapTopBar(
                   greeting: _greeting(),
@@ -312,7 +340,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   onProfile: () => _go('/profile'),
                 ),
                 sheet: AppDraggableSheet(
-                  initialSize: hasRide ? 0.56 : 0.52,
+                  initialSize: sheetFraction,
                   builder: (context, controller) => ListView(
                     controller: controller,
                     padding: const EdgeInsets.fromLTRB(
@@ -445,6 +473,23 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: _routeSection(provider),
                         ),
 
+                        const SizedBox(height: AppSpacing.md),
+                        const SectionLabel('Ride type'),
+                        const SizedBox(height: AppSpacing.xs),
+                        SegmentedTabs(
+                          tabs: const ['Normal', 'Carpool'],
+                          activeIndex: provider.isShared ? 1 : 0,
+                          onChanged: (i) => provider.setIsShared(i == 1),
+                        ),
+                        const SizedBox(height: AppSpacing.xxs + 2),
+                        Text(
+                          provider.isShared
+                              ? 'Share the ride with riders going your way.'
+                              : 'A private ride just for you.',
+                          style: AppType.caption.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
                         const SizedBox(height: AppSpacing.md),
                         const SectionLabel('Choose a ride'),
                         const SizedBox(height: AppSpacing.sm),
@@ -830,6 +875,27 @@ class _ActiveRidePanel extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    if (ride != null) ...[
+                      const SizedBox(height: AppSpacing.xxs),
+                      Row(
+                        children: [
+                          Icon(
+                            ride!.isShared
+                                ? Icons.group_outlined
+                                : Icons.person_outline,
+                            size: 14,
+                            color: AppColors.textSecondary,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            ride!.isShared ? 'Carpool' : 'Private ride',
+                            style: AppType.caption.copyWith(
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -838,11 +904,17 @@ class _ActiveRidePanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: AppSpacing.md),
-          RideStageStepper(
-            stages: RideStages.keys,
-            labels: RideStages.labels,
-            currentIndex: RideStages.indexOf(status),
-          ),
+          // A carpool ride renders the finer per-rider lifecycle (assigned
+          // pickup stop, walking distance, confirm-at-stop) instead of the
+          // generic 6-step stepper.
+          if (ride?.isShared == true)
+            const CarpoolPassengerPanel()
+          else
+            RideStageStepper(
+              stages: RideStages.keys,
+              labels: RideStages.labels,
+              currentIndex: RideStages.indexOf(status),
+            ),
           const SizedBox(height: AppSpacing.md),
           Container(
             padding: const EdgeInsets.all(AppSpacing.sm),

@@ -12,6 +12,10 @@ class DriverVehicle {
   final double? lat;
   final double? lng;
 
+  /// Pooled route this vehicle is currently running, if the optimizer assigned
+  /// one. Drives the driver console's route map.
+  final String? assignedRouteId;
+
   const DriverVehicle({
     required this.id,
     required this.licensePlate,
@@ -20,7 +24,22 @@ class DriverVehicle {
     this.driverUserId,
     this.lat,
     this.lng,
+    this.assignedRouteId,
   });
+
+  /// Same vehicle with a new duty status and/or position — keeps every other
+  /// field, including the pooled route the optimizer assigned to it.
+  DriverVehicle copyWith({String? status, double? lat, double? lng}) =>
+      DriverVehicle(
+        id: id,
+        licensePlate: licensePlate,
+        capacity: capacity,
+        status: status ?? this.status,
+        driverUserId: driverUserId,
+        lat: lat ?? this.lat,
+        lng: lng ?? this.lng,
+        assignedRouteId: assignedRouteId,
+      );
 
   static int? _parseInt(dynamic raw) =>
       raw == null ? null : int.tryParse(raw.toString());
@@ -44,6 +63,7 @@ class DriverVehicle {
       driverUserId: _parseInt(json['driver_user_id']),
       lat: _parseDouble(json['lat']),
       lng: _parseDouble(json['lng']),
+      assignedRouteId: json['assigned_route_id']?.toString(),
     );
   }
 }
@@ -86,6 +106,17 @@ class DriverService {
       if (v.driverUserId == userId) return v;
     }
     return null;
+  }
+
+  /// The pooled route plan this vehicle is running: `GET /route/history/{id}`
+  /// (drivers may read their own route plans). Null when the route is gone.
+  Future<Map<String, dynamic>?> fetchRoutePlan(String routeId) async {
+    try {
+      final response = await _api.getJson('/route/history/$routeId');
+      return response is Map<String, dynamic> ? response : null;
+    } on ApiException {
+      return null;
+    }
   }
 
   Future<void> setVehicleStatus(int vehicleId, String status) async {

@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../models/shared_route.dart';
 import '../models/vehicle_animation.dart';
 import '../services/geocoding_service.dart';
 import '../services/map_tiles.dart';
@@ -40,6 +41,13 @@ class LiveMap extends StatefulWidget {
     this.pickup,
     this.destination,
     this.route = const [],
+    this.routeSegments,
+    this.segmentsMode = false,
+    this.routeStops = const [],
+    this.mySegmentIndices = const [],
+    this.nextStopSequence,
+    this.onToggleSegments,
+    this.bottomControlsInset = 0,
     this.vehicles = const [],
     this.onPick,
     this.onLocate,
@@ -56,6 +64,7 @@ class LiveMap extends StatefulWidget {
     this.tileSource,
     this.vehicleAnimation,
     this.followVehicle = false,
+    this.walkRoute = const [],
   });
 
   final GeoPoint? pickup;
@@ -63,6 +72,34 @@ class LiveMap extends StatefulWidget {
 
   /// Ordered route polyline.
   final List<GeoPoint> route;
+
+  /// The pooled route's legs, drawn one by one when [segmentsMode] is on.
+  final List<List<GeoPoint>>? routeSegments;
+
+  /// Draw the shared route leg by leg rather than as one line.
+  final bool segmentsMode;
+
+  /// Stops of the pooled route, numbered in the order the vehicle visits them.
+  final List<RouteStop> routeStops;
+
+  /// Legs the signed-in passenger actually rides (highlighted in segments mode).
+  final List<int> mySegmentIndices;
+
+  /// Stop the client still has to serve — the driver's next stop. Drawn in the
+  /// accent like the passenger's own stops, so whoever is driving can see where
+  /// to head at a glance.
+  final int? nextStopSequence;
+
+  /// Shows the single-line/segments control on the map. Null hides it — the
+  /// ride has no pooled route to switch to.
+  final VoidCallback? onToggleSegments;
+
+  /// Bottom space the map's own controls must clear. A full-bleed map is
+  /// overlaid by a floating sheet, so its bottom edge is hidden: callers pass
+  /// the sheet's height here and the route-mode chip is anchored just above the
+  /// sheet instead of behind it. Zero for embedded maps (the driver console).
+  final double bottomControlsInset;
+
   final List<MapVehicle> vehicles;
 
   /// Fires when the user taps the map (used for "Choose on map").
@@ -102,6 +139,10 @@ class LiveMap extends StatefulWidget {
   /// Track the animated vehicle with the camera — the site's `followCamera`,
   /// which it enables only while the trip is in progress.
   final bool followVehicle;
+
+  /// Walking path from the rider's original pickup to the assigned carpool
+  /// stop, drawn thinner and in the accent so it reads as walking, not driving.
+  final List<GeoPoint> walkRoute;
 
   @override
   State<LiveMap> createState() => _LiveMapState();
@@ -360,6 +401,13 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
   String _lastFitSignature = '';
 
   String get _fitSignature {
+    final segments = widget.routeSegments;
+    if (widget.segmentsMode && segments != null && segments.length > 1) {
+      final first = segments.first.first;
+      final last = segments.last.last;
+      return 'seg:${segments.length}:${first.lat},${first.lng}:'
+          '${last.lat},${last.lng}';
+    }
     final r = widget.route;
     if (r.length >= 2) {
       return 'r:${r.length}:${r.first.lat},${r.first.lng}:'
@@ -372,7 +420,13 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
   void _fitToContent() {
     if (!_ready) return;
     final points = <LatLng>[
-      ...widget.route.map((p) => LatLng(p.lat, p.lng)),
+      if (widget.segmentsMode && (widget.routeSegments?.length ?? 0) > 1)
+        ...[
+          for (final segment in widget.routeSegments!)
+            for (final point in segment) LatLng(point.lat, point.lng),
+        ]
+      else
+        ...widget.route.map((p) => LatLng(p.lat, p.lng)),
       if (widget.pickup != null) LatLng(widget.pickup!.lat, widget.pickup!.lng),
       if (widget.destination != null)
         LatLng(widget.destination!.lat, widget.destination!.lng),
@@ -431,6 +485,10 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
     final routePoints = widget.route
         .map((p) => LatLng(p.lat, p.lng))
         .toList(growable: false);
+    final segmentPoints = _segmentPoints;
+    final walkPoints = widget.walkRoute
+        .map((p) => LatLng(p.lat, p.lng))
+        .toList(growable: false);
 
     final source = _source;
 
@@ -473,8 +531,49 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
                 _tileBuilder(context, tile, tileImage, source),
           ),
 
-        // Route: soft casing under a solid line (site recipe).
-        if (routePoints.length >= 2) ...[
+        // Carpool walk from the original pickup to the assigned stop.
+        if (walkPoints.length >= 2) ...[
+          PolylineLayer(
+            polylines: [
+              Polyline(points: walkPoints, strokeWidth: 7, color: AppColors.bg),
+            ],
+          ),
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: walkPoints,
+                strokeWidth: 3,
+                color: AppColors.accent,
+              ),
+            ],
+          ),
+        ],
+
+        // Route: soft casing under a solid line (site recipe). A pooled ride in
+        // segments mode applies the same recipe leg by leg, so the boardings
+        // and drop-offs read in the order the vehicle serves them.
+        if (segmentPoints.isNotEmpty) ...[
+          PolylineLayer(
+            polylines: [
+              for (final segment in segmentPoints)
+                Polyline(
+                  points: segment,
+                  strokeWidth: 9,
+                  color: AppColors.bg,
+                ),
+            ],
+          ),
+          PolylineLayer(
+            polylines: [
+              for (var index = 0; index < segmentPoints.length; index++)
+                Polyline(
+                  points: segmentPoints[index],
+                  strokeWidth: 4.5,
+                  color: _segmentColor(index),
+                ),
+            ],
+          ),
+        ] else if (routePoints.length >= 2) ...[
           PolylineLayer(
             polylines: [
               Polyline(
@@ -494,6 +593,25 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
             ],
           ),
         ],
+
+        // Numbered stops of the pooled route (segments mode only).
+        if (segmentPoints.isNotEmpty && widget.routeStops.isNotEmpty)
+          MarkerLayer(
+            markers: [
+              for (final stop in widget.routeStops)
+                Marker(
+                  point: LatLng(stop.point.lat, stop.point.lng),
+                  width: 26,
+                  height: 26,
+                  child: _StopMarker(
+                    label: '${stop.sequence + 1}',
+                    rounded: !stop.isDestination,
+                    isMine: stop.isMine ||
+                        stop.sequence == widget.nextStopSequence,
+                  ),
+                ),
+            ],
+          ),
 
         // Pickup and drop-off never move, so they stay outside the motion
         // listener and are not rebuilt on every animation frame.
@@ -536,6 +654,48 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
     final surface = Stack(
       children: [
         Positioned.fill(child: map),
+        if (widget.onToggleSegments != null &&
+            (widget.routeSegments?.length ?? 0) > 1)
+          Positioned(
+            right: AppSpacing.sm,
+            bottom: AppSpacing.sm + 50 + widget.bottomControlsInset,
+            child: Material(
+              color: AppColors.bg,
+              borderRadius: AppRadius.all(AppRadius.md),
+              child: InkWell(
+                onTap: widget.onToggleSegments,
+                borderRadius: AppRadius.all(AppRadius.md),
+                child: Container(
+                  height: 42,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+                  decoration: BoxDecoration(
+                    borderRadius: AppRadius.all(AppRadius.md),
+                    border: Border.all(
+                      color: widget.segmentsMode
+                          ? AppColors.paper
+                          : AppColors.border,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        widget.segmentsMode ? Icons.timeline : Icons.route,
+                        size: 16,
+                        color: AppColors.paper,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        widget.segmentsMode ? 'Legs' : 'Route',
+                        style: AppType.badge.copyWith(color: AppColors.paper),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         if (widget.onLocate != null)
           Positioned(
             right: AppSpacing.sm,
@@ -616,6 +776,74 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
       );
     }
     return result;
+  }
+
+  /// The pooled route's legs as map points, or empty when there is nothing to
+  /// draw leg by leg.
+  List<List<LatLng>> get _segmentPoints {
+    if (!widget.segmentsMode) return const [];
+    final segments = widget.routeSegments;
+    if (segments == null || segments.length < 2) return const [];
+    return [
+      for (final segment in segments)
+        if (segment.length >= 2)
+          [for (final point in segment) LatLng(point.lat, point.lng)],
+    ];
+  }
+
+  /// Leg colors alternate between the palette's white and muted grey so
+  /// consecutive legs read as separate stretches of the same trip; the legs the
+  /// signed-in passenger rides use the app accent, which answers "where am I on
+  /// this route?" without adding a second color language.
+  Color _segmentColor(int index) {
+    if (widget.mySegmentIndices.contains(index)) return AppColors.accent;
+    return index.isEven ? AppColors.paper : AppColors.gray400;
+  }
+}
+
+/// Numbered stop pin for a pooled route. The number is the stop's position on
+/// the vehicle's route; boarding stops are round and drop-offs squared, the same
+/// language the rider's own pickup and drop-off markers use.
+class _StopMarker extends StatelessWidget {
+  const _StopMarker({
+    required this.label,
+    required this.rounded,
+    required this.isMine,
+  });
+
+  final String label;
+  final bool rounded;
+  final bool isMine;
+
+  @override
+  Widget build(BuildContext context) {
+    final background = isMine ? AppColors.accent : AppColors.paper;
+    final foreground = isMine ? AppColors.paper : AppColors.ink;
+    final decoration = rounded
+        ? BoxDecoration(
+            color: background,
+            shape: BoxShape.circle,
+            border: Border.all(color: AppColors.bg, width: 2),
+            boxShadow: AppShadows.sm,
+          )
+        : BoxDecoration(
+            color: background,
+            borderRadius: AppRadius.all(AppRadius.sm),
+            border: Border.all(color: AppColors.bg, width: 2),
+            boxShadow: AppShadows.sm,
+          );
+    return Center(
+      child: Container(
+        width: 22,
+        height: 22,
+        decoration: decoration,
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: AppType.badge.copyWith(color: foreground),
+        ),
+      ),
+    );
   }
 }
 

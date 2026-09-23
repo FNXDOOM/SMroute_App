@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/ride_stage.dart';
+import '../../models/shared_route.dart';
 import '../../providers/payment_provider.dart';
 import '../../providers/ride_provider.dart';
 import '../../services/geocoding_service.dart';
 import '../../services/routing_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/carpool_passenger_panel.dart';
 import '../../widgets/live_map.dart';
 import '../../widgets/ui_kit.dart';
 
@@ -158,33 +160,52 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
     // The camera is driven from the animation itself, so it tracks the smoothly
     // interpolated car rather than the last polled coordinate.
     final following = status == 'in_progress';
+    // Fraction of the screen the live panel covers at most. Shared with the map
+    // so its route-mode chip sits above the panel, not behind it.
+    const sheetFraction = 0.66;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
       body: MapFirstScaffold(
-        map: LiveMap(
-          fullBleed: true,
-          pickup: pickup,
-          destination: destination,
-          route: route,
-          vehicles: hasVehicle
-              ? [
-                  MapVehicle(
-                    id: '${vehicle?.id}',
-                    lat: vehicleLat,
-                    lng: vehicleLng,
-                    label: vehicle?.licensePlate ?? '',
-                  ),
-                ]
-              : const [],
-          // Drives the car from the ride status — the backend assigns no
-          // vehicle position for most rides, so without this the map shows
-          // nothing to track.
-          vehicleAnimation: provider.vehicleAnimation,
-          followVehicle: following,
-          initialCenter: pickup,
-          attribution: false,
-          cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),
+        map: LayoutBuilder(
+          builder: (context, constraints) => LiveMap(
+            fullBleed: true,
+            pickup: pickup,
+            destination: destination,
+            route: route,
+            // Pooled ride: the shared route's legs + numbered stops, with the
+            // toggle that switches the map between the two drawings.
+            routeSegments: provider.sharedRoute?.legPoints,
+            segmentsMode: provider.routeDisplay == RouteDisplayMode.segments,
+            routeStops: provider.sharedRoute?.stops ?? const [],
+            mySegmentIndices: provider.sharedRoute?.myLegIndices ?? const [],
+            // The walk from the rider's pickup to the assigned carpool stop.
+            walkRoute: provider.pickupWalkRoute,
+            onToggleSegments: provider.hasSegmentedRoute
+                ? provider.toggleRouteDisplay
+                : null,
+            // The panel covers the map's lower edge — keep the chip above it
+            // so it stays visible and tappable.
+            bottomControlsInset: constraints.maxHeight * sheetFraction,
+            vehicles: hasVehicle
+                ? [
+                    MapVehicle(
+                      id: '${vehicle?.id}',
+                      lat: vehicleLat,
+                      lng: vehicleLng,
+                      label: vehicle?.licensePlate ?? '',
+                    ),
+                  ]
+                : const [],
+            // Drives the car from the ride status — the backend assigns no
+            // vehicle position for most rides, so without this the map shows
+            // nothing to track.
+            vehicleAnimation: provider.vehicleAnimation,
+            followVehicle: following,
+            initialCenter: pickup,
+            attribution: false,
+            cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),
+          ),
         ),
         topBar: Row(
           children: [
@@ -245,7 +266,7 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
           // screen — the site's panel scrolls, it doesn't clip.
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.sizeOf(context).height * 0.66,
+              maxHeight: MediaQuery.sizeOf(context).height * sheetFraction,
             ),
             child: SheetPanel(
               child: SingleChildScrollView(
@@ -262,17 +283,29 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                       trailing: StatusBadge(status: status),
                     ),
                     const SizedBox(height: AppSpacing.md),
-                    RideStageStepper(
-                      stages: RideStages.keys,
-                      labels: RideStages.labels,
-                      currentIndex: RideStages.indexOf(status),
-                    ),
+                    // A carpool ride shows the finer per-rider lifecycle
+                    // (assigned pickup stop, walking distance, confirm-at-stop)
+                    // instead of the generic 6-step stepper.
+                    if (ride.isShared)
+                      const CarpoolPassengerPanel()
+                    else
+                      RideStageStepper(
+                        stages: RideStages.keys,
+                        labels: RideStages.labels,
+                        currentIndex: RideStages.indexOf(status),
+                      ),
                     const SizedBox(height: AppSpacing.md),
                     RouteLeg(
                       pickup: ride.pickupLabel,
                       destination: ride.destinationLabel,
                     ),
                     const SizedBox(height: AppSpacing.md),
+                    InfoRow(
+                      icon: Icons.group_outlined,
+                      label: 'Ride type',
+                      value: ride.isShared ? 'Carpool' : 'Private ride',
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
                     InfoRow(
                       icon: Icons.directions_car_outlined,
                       label: 'Vehicle',

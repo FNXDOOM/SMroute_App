@@ -124,6 +124,23 @@ void main() {
         throwsFormatException,
       );
     });
+
+    test('reads the carpool flag, defaulting to shared when absent', () {
+      RideRequestRecord ride(Map<String, dynamic> extra) =>
+          RideRequestRecord.fromJson({
+            'id': 1,
+            'pickup_lat': 12.97,
+            'pickup_lng': 77.59,
+            'dest_lat': 12.93,
+            'dest_lng': 77.62,
+            'status': 'pending',
+            ...extra,
+          });
+
+      expect(ride({'is_shared': false}).isShared, isFalse);
+      expect(ride({'is_shared': true}).isShared, isTrue);
+      expect(ride({}).isShared, isTrue, reason: 'absent means shared');
+    });
   });
 
   group('Backend contract: VehicleSnapshot (GET /rides/{id}/vehicle)', () {

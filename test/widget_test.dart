@@ -236,6 +236,24 @@ void main() {
       expect(ride.destination, isNull);
       expect(ride.error, isNull);
     });
+
+    test('ride type defaults to carpool and resets to it', () {
+      final ride = RideProvider();
+      expect(ride.isShared, isTrue);
+
+      var notified = 0;
+      ride.addListener(() => notified++);
+      ride.setIsShared(false);
+      expect(ride.isShared, isFalse);
+      expect(notified, 1);
+
+      // Setting the same value again must not notify.
+      ride.setIsShared(false);
+      expect(notified, 1);
+
+      ride.reset();
+      expect(ride.isShared, isTrue);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -321,6 +339,18 @@ void main() {
   // 9. DriverProvider (website DriverView parity)
   // -------------------------------------------------------------------------
   group('DriverProvider', () {
+    RideRequestRecord boardRide(int id, String status) =>
+        RideRequestRecord.fromJson({
+          'id': id,
+          'pickup_lat': 12.9719,
+          'pickup_lng': 77.6412,
+          'dest_lat': 12.9756,
+          'dest_lng': 77.6066,
+          'status': status,
+          'pickup_label': 'Indiranagar 100 Feet Rd',
+          'destination_label': 'MG Road Metro',
+        });
+
     DriverProvider buildProvider() {
       final auth = AuthProvider();
       return DriverProvider(auth);
@@ -339,11 +369,20 @@ void main() {
 
     test('activeRides/pendingRides filter and sort by newest first', () {
       final driver = buildProvider();
-      // Use the public board setter path via reflection-free approach: we
-      // can't set private fields, so exercise the public getters' contracts
-      // through an empty board (real filtering is backend-driven).
-      expect(driver.activeRides, isEmpty);
-      expect(driver.pendingRides, isEmpty);
+      driver.debugSetBoard([
+        boardRide(11, 'pending'),
+        boardRide(12, 'in_progress'),
+        boardRide(13, 'pending'),
+        boardRide(14, 'completed'),
+        boardRide(15, 'assigned'),
+      ]);
+
+      // Newest first within each group. Finished rides stay visible on the
+      // board but are neither pending nor active — the driver's next-stop
+      // callout relies on exactly that.
+      expect(driver.pendingRides.map((ride) => ride.id), [13, 11]);
+      expect(driver.activeRides.map((ride) => ride.id), [15, 12]);
+      expect(driver.board.length, 5);
     });
   });
 
@@ -478,9 +517,10 @@ void main() {
         ),
       );
 
-      // While the trip is under way the map draws it.
+      // While the trip is under way the map draws it — through real tracking,
+      // not the simulated path, because a live position exists.
       expect(ride.trackableVehicle, isNotNull);
-      expect(ride.vehicleAnimation, isNotNull);
+      expect(ride.vehicleAnimation, isNull);
 
       ride.handleRideStatusUpdate('completed', 258);
 

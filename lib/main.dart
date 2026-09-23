@@ -1,4 +1,6 @@
 import 'package:clerk_flutter/clerk_flutter.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -13,6 +15,7 @@ import 'providers/payment_provider.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/auth/register_screen.dart';
 import 'screens/driver/driver_apply_screen.dart';
+import 'screens/driver/carpool_run_screen.dart';
 import 'screens/driver/driver_console_screen.dart';
 import 'screens/ride/ride_confirm_screen.dart';
 import 'screens/home/home_screen.dart';
@@ -78,6 +81,11 @@ class SmartRouteApp extends StatelessWidget {
           update: (_, rideProvider, notifProvider) {
             notifProvider ??= NotificationProvider();
             notifProvider.onRideStatusUpdated = rideProvider.handleRideStatusUpdate;
+            // Carpool events don't all change the coarse status, so re-read the
+            // authoritative stage from the backend when one arrives.
+            notifProvider.onCarpoolEvent = (_, _) {
+              unawaited(rideProvider.refreshActiveRide());
+            };
             return notifProvider;
           },
         ),
@@ -149,6 +157,8 @@ class SmartRouteApp extends StatelessWidget {
                       return const ProfileScreen();
                     case '/driver':
                       return const DriverConsoleScreen();
+                    case '/carpool-run':
+                      return const CarpoolRunScreen();
                     case '/driver-apply':
                       return const DriverApplyScreen();
                     default:

@@ -8,6 +8,15 @@ class RideRequestRecord {
   final String? h3Index;
   final int? clusterId;
   final int? virtualStopId;
+
+  /// Whether this ride is a carpool (pooled with other riders) or a private
+  /// ride. The booking choice the backend echoes back; defaults to shared.
+  final bool isShared;
+
+  /// Fine per-rider carpool stage (`carpool_status`). Null for a private ride
+  /// or a record written before the backend tracked the carpool axis; see
+  /// [CarpoolStage.fromRide] for the fallback.
+  final String? carpoolStatus;
   final DateTime? requestTime;
   // Human-readable labels (available when booked via the mobile app)
   final String? pickupLabelText;
@@ -26,6 +35,8 @@ class RideRequestRecord {
     this.h3Index,
     this.clusterId,
     this.virtualStopId,
+    this.isShared = true,
+    this.carpoolStatus,
     this.requestTime,
     this.pickupLabelText,
     this.destinationLabelText,
@@ -47,6 +58,8 @@ class RideRequestRecord {
       h3Index: h3Index,
       clusterId: clusterId,
       virtualStopId: virtualStopId,
+      isShared: isShared,
+      carpoolStatus: carpoolStatus,
       requestTime: requestTime,
       pickupLabelText: pickupLabelText,
       destinationLabelText: destinationLabelText,
@@ -82,6 +95,10 @@ class RideRequestRecord {
       virtualStopId: json['virtual_stop_id'] == null
           ? null
           : int.tryParse(json['virtual_stop_id'].toString()),
+      isShared: json['is_shared'] == null
+          ? true
+          : json['is_shared'].toString() == 'true',
+      carpoolStatus: json['carpool_status']?.toString(),
       requestTime: json['request_time'] == null
           ? null
           : DateTime.tryParse(json['request_time'].toString()),
