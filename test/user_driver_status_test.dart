@@ -4,13 +4,17 @@ import 'package:finalyr_app/models/user.dart';
 /// Guards the client's reading of the backend's `driver_status`, which
 /// `get_current_driver_user` now enforces on every driver endpoint.
 void main() {
-  Map<String, dynamic> userJson({required String role, String? status}) => {
+  Map<String, dynamic> userJson({
+    required String role,
+    required String status,
+  }) =>
+      {
         'id': 7,
         'name': 'Nikhil',
         'email': 'n@example.com',
         'phone': '9999999999',
         'role': role,
-        if (status != null) 'driver_status': status,
+        'driver_status': status,
       };
 
   group('AppUser.driverStatus', () {
@@ -22,7 +26,13 @@ void main() {
     });
 
     test('treats a missing field as not yet approved', () {
-      final user = AppUser.fromJson(userJson(role: 'driver'));
+      final user = AppUser.fromJson(<String, dynamic>{
+        'id': 7,
+        'name': 'Nikhil',
+        'email': 'n@example.com',
+        'phone': '9999999999',
+        'role': 'driver',
+      });
       expect(user.driverStatus, 'pending_verification');
     });
 
