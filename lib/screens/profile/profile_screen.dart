@@ -125,6 +125,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _phoneController.text = user.phone;
     }
 
+    // The backend refuses every driver endpoint unless driver_status is
+    // 'active', so offering the console to an unapproved or suspended driver
+    // would just hand them a screen full of permission errors.
+    final isDriver = user.role == 'driver';
+    final driverRoute = !isDriver
+        ? '/driver-apply'
+        : user.canDrive
+            ? '/driver'
+            : null;
+    final driverSubtitle = !isDriver
+        ? 'Apply to drive and earn on Smroute'
+        : user.canDrive
+            ? 'Duty, dispatch board and ride updates'
+            : user.driverStatus == 'suspended'
+                ? 'Suspended — the console is closed to you'
+                : 'Awaiting verification — opens once approved';
+
     return Scaffold(
       backgroundColor: AppColors.bg,
       body: SafeArea(
@@ -236,12 +253,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     horizontal: AppSpacing.lg,
                   ),
                   child: ListRow(
-                    title: user.role == 'driver'
+                    title: user.canDrive
                         ? 'Driver console'
                         : 'Drive with Smroute',
-                    subtitle: user.role == 'driver'
-                        ? 'Duty, dispatch board and ride updates'
-                        : 'Apply to drive and earn on Smroute',
+                    subtitle: driverSubtitle,
                     leading: Container(
                       width: 40,
                       height: 40,
@@ -250,22 +265,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         borderRadius: AppRadius.all(AppRadius.md),
                       ),
                       child: Icon(
-                        user.role == 'driver'
+                        isDriver
                             ? Icons.local_shipping_outlined
                             : Icons.directions_car_outlined,
                         size: 18,
                         color: AppColors.textSecondary,
                       ),
                     ),
-                    trailing: const Icon(
-                      Icons.chevron_right,
-                      size: 18,
-                      color: AppColors.textSubtle,
-                    ),
-                    onTap: () => Navigator.pushNamed(
-                      context,
-                      user.role == 'driver' ? '/driver' : '/driver-apply',
-                    ),
+                    trailing: driverRoute == null
+                        ? const SizedBox.shrink()
+                        : const Icon(
+                            Icons.chevron_right,
+                            size: 18,
+                            color: AppColors.textSubtle,
+                          ),
+                    onTap: () {
+                      if (driverRoute != null) {
+                        Navigator.pushNamed(context, driverRoute);
+                      }
+                    },
                   ),
                 ),
               ),
