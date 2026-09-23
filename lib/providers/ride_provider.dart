@@ -39,8 +39,12 @@ class PaymentFlowException implements Exception {
 }
 
 class RideProvider extends ChangeNotifier {
-  final ApiClient _api = ApiClient.instance;
-  final CarpoolService _carpool = CarpoolService.instance;
+  RideProvider({ApiClient? api, CarpoolService? carpool})
+      : _api = api ?? ApiClient.instance,
+        _carpool = carpool ?? CarpoolService.instance;
+
+  final ApiClient _api;
+  final CarpoolService _carpool;
 
   String? _destination;
   GeoPoint? _destinationPoint;
@@ -88,6 +92,7 @@ class RideProvider extends ChangeNotifier {
   StreamSubscription? _trackingSubscription;
   int _trackingReconnectAttempts = 0;
   Timer? _trackingReconnectTimer;
+  Timer? _vehicleFallbackTimer;
   bool _disposed = false;
 
   // ── Fare payment (website's RazorpayPayment on the active-ride card) ────
@@ -195,6 +200,10 @@ class RideProvider extends ChangeNotifier {
 
   // Bounded reconnect for the tracking socket (no connection storms).
   static const int _maxTrackingReconnectAttempts = 5;
+
+  // Cadence for the REST position poll that takes over once the socket's
+  // reconnect budget is gone.
+  static const Duration _vehicleFallbackInterval = Duration(seconds: 10);
 
   // Status polling cadence while a ride is non-terminal.
   static const Duration _statusPollInterval = Duration(seconds: 5);
@@ -1176,7 +1185,10 @@ class RideProvider extends ChangeNotifier {
   void _scheduleTrackingReconnect() {
     _teardownTrackingChannel();
     if (_disposed || isRideTerminal) return;
-    if (_trackingReconnectAttempts >= _maxTrackingReconnectAttempts) return;
+    if (_trackingReconnectAttempts >= _maxTrackingReconnectAttempts) {
+      _startVehiclePositionFallback();
+      return;
+    }
     _trackingReconnectAttempts++;
     _trackingReconnectTimer?.cancel();
     _trackingReconnectTimer = Timer(
@@ -1191,6 +1203,50 @@ class RideProvider extends ChangeNotifier {
       },
     );
   }
+
+  /// Takes over vehicle position once the socket's reconnect budget is spent.
+  ///
+  /// `/tracking/feed` would be the obvious REST prime for the same payload, but
+  /// it is driver-only (`backend/routers/tracking.py:206`), so a passenger's
+  /// remaining source is the per-ride endpoint the pre-assignment poll uses.
+  void _startVehiclePositionFallback() {
+    if (_vehicleFallbackTimer != null) return;
+    _vehicleFallbackTimer = Timer.periodic(
+        _vehicleFallbackInterval, (_) => unawaited(_pollVehiclePositionFallback()));
+    unawaited(_pollVehiclePositionFallback());
+  }
+
+  Future<void> _pollVehiclePositionFallback() async {
+    // Stops itself: a socket that recovers owns the position again, and a
+    // terminal ride needs no further updates.
+    if (_disposed || isRideTerminal || _trackingChannel != null) {
+      _vehicleFallbackTimer?.cancel();
+      _vehicleFallbackTimer = null;
+      return;
+    }
+    final rideId = _currentRideId;
+    if (rideId == null || _isFetchingVehicle) return;
+    _isFetchingVehicle = true;
+    try {
+      final response = await _api.getJson('/rides/$rideId/vehicle');
+      if (response is Map<String, dynamic>) {
+        final vehicle = AssignedVehicle.fromJson(response);
+        if (vehicle.id != -1) {
+          _assignedVehicle = vehicle;
+          notifyListeners();
+        }
+      }
+    } catch (_) {
+      // Background refresh; the next tick retries.
+    } finally {
+      _isFetchingVehicle = false;
+    }
+  }
+
+  /// Test seam for the post-exhaustion REST position poll.
+  @visibleForTesting
+  Future<void> debugPollVehiclePositionFallback() =>
+      _pollVehiclePositionFallback();
 
   /// Closes the socket + subscription without touching reconnect state.
   void _teardownTrackingChannel() {
@@ -1209,6 +1265,8 @@ class RideProvider extends ChangeNotifier {
   void _stopVehicleTracking({bool keepAttempts = false}) {
     _vehiclePollTimer?.cancel();
     _vehiclePollTimer = null;
+    _vehicleFallbackTimer?.cancel();
+    _vehicleFallbackTimer = null;
     if (!keepAttempts) _vehiclePollAttempts = 0;
     _isFetchingVehicle = false;
     _teardownTrackingChannel();
