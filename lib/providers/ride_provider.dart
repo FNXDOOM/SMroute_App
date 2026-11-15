@@ -14,6 +14,7 @@ import '../models/vehicle_animation.dart';
 import '../services/api_client.dart';
 import '../services/carpool_service.dart';
 import '../services/geocoding_service.dart';
+import '../services/map_tiles.dart';
 import '../services/razorpay_service.dart';
 import '../services/ride_vehicle_animation.dart';
 import '../services/routing_service.dart';
@@ -901,6 +902,9 @@ class RideProvider extends ChangeNotifier {
     _paymentError = null;
     _destination = null;
     _destinationPoint = null;
+    _pickupPoint = null;
+    _pickupLabel = 'Current location';
+    _pickupConfirmed = false;
     _isResolvingDestination = false;
     _selectedOption = null;
     _stage = BookingStage.matching;
@@ -945,6 +949,7 @@ class RideProvider extends ChangeNotifier {
     reset();
     _myRides.clear();
     RazorpayService.reset();
+    MapTiles.reset();
     _paymentPhase = PaymentPhase.idle;
     _paymentError = null;
   }
@@ -959,66 +964,76 @@ class RideProvider extends ChangeNotifier {
 
   void _startStatusPolling() {
     _stopStatusPolling();
-    _statusPollTimer = Timer.periodic(_statusPollInterval, (_) async {
-      if (_isPollingStatus || _currentRideId == null) return;
-      if (isRideTerminal) {
-        _stopStatusPolling();
-        return;
-      }
-      _isPollingStatus = true;
-      // The in-transit animation follows the road route; make sure we have it
-      // (no-op once loaded). Runs on the existing 5 s status tick.
-      unawaited(ensureActiveRideRoute());
-      // A pooled route can appear once the backend clusters the ride, so this
-      // is retried here rather than on a poller of its own.
-      unawaited(_ensureSharedRoute());
-      try {
-        final response =
-            await _api.getJson('/rides/$_currentRideId');
-        if (response is Map<String, dynamic>) {
-          final backendStatus = (response['status'] ?? '').toString();
-          final statusChanged = backendStatus != _lastPolledBackendStatus;
-          _lastPolledBackendStatus = backendStatus;
-          final stageFor = _stageForStatus(backendStatus);
-          if (stageFor != null && stageFor != _stage) {
-            // Advance the stage machine from authoritative server state.
-            _stage = stageFor;
-            if (isRideTerminal) _stopVehicleTracking(keepAttempts: true);
-          }
-          if (statusChanged) {
-            // The UI reads the ride record, not this private stage — write
-            // the authoritative status through (site: setActiveRide(r)).
-            // The WS path notifies at the end of handleRideStatusUpdate; the
-            // poll has no other notify, so it must notify here or the work
-            // is invisible to the UI until something else rebuilds.
-            _applyStatusToRideRecord(backendStatus);
-            notifyListeners();
-          }
-          // A vehicle may appear while we poll (backend jobs assign routes
-          // asynchronously). If the dedicated vehicle poller had given up,
-          // give it ONE fresh burst of attempts per status transition —
-          // restarting every tick would make the UI flicker between
-          // "Assigning…" and "Not available" forever.
-          if (statusChanged &&
-              !isRideTerminal &&
-              _assignedVehicle == null &&
-              _vehiclePollTimer == null) {
-            _startVehiclePolling();
-          }
-        }
-      } on ApiException catch (e) {
-        if (e.statusCode == 404 || e.statusCode == 403) {
-          // Ride gone or not ours — stop polling; UI stays on current stage.
-          _stopStatusPolling();
-        }
-        // Transient network/5xx: keep polling silently.
-      } catch (_) {
-        // Ignore one-off failures; the next tick retries.
-      } finally {
-        _isPollingStatus = false;
-      }
-    });
+    _statusPollTimer =
+        Timer.periodic(_statusPollInterval, (_) => unawaited(_pollStatusOnce()));
   }
+
+  Future<void> _pollStatusOnce() async {
+    if (_isPollingStatus || _currentRideId == null) return;
+    if (isRideTerminal) {
+      _stopStatusPolling();
+      return;
+    }
+    _isPollingStatus = true;
+    final rideId = _currentRideId;
+    // The in-transit animation follows the road route; make sure we have it
+    // (no-op once loaded). Runs on the existing 5 s status tick.
+    unawaited(ensureActiveRideRoute());
+    // A pooled route can appear once the backend clusters the ride, so this
+    // is retried here rather than on a poller of its own.
+    unawaited(_ensureSharedRoute());
+    try {
+      final response = await _api.getJson('/rides/$rideId');
+      // A dismiss/rebook may have landed while the request was in flight —
+      // never write the old ride's status onto the current one.
+      if (_disposed || _currentRideId != rideId) return;
+      if (response is Map<String, dynamic>) {
+        final backendStatus = (response['status'] ?? '').toString();
+        final statusChanged = backendStatus != _lastPolledBackendStatus;
+        _lastPolledBackendStatus = backendStatus;
+        final stageFor = _stageForStatus(backendStatus);
+        if (stageFor != null && stageFor != _stage) {
+          // Advance the stage machine from authoritative server state.
+          _stage = stageFor;
+          if (isRideTerminal) _stopVehicleTracking(keepAttempts: true);
+        }
+        if (statusChanged) {
+          // The UI reads the ride record, not this private stage — write
+          // the authoritative status through (site: setActiveRide(r)).
+          // The WS path notifies at the end of handleRideStatusUpdate; the
+          // poll has no other notify, so it must notify here or the work
+          // is invisible to the UI until something else rebuilds.
+          _applyStatusToRideRecord(backendStatus);
+          notifyListeners();
+        }
+        // A vehicle may appear while we poll (backend jobs assign routes
+        // asynchronously). If the dedicated vehicle poller had given up,
+        // give it ONE fresh burst of attempts per status transition —
+        // restarting every tick would make the UI flicker between
+        // "Assigning…" and "Not available" forever.
+        if (statusChanged &&
+            !isRideTerminal &&
+            _assignedVehicle == null &&
+            _vehiclePollTimer == null) {
+          _startVehiclePolling();
+        }
+      }
+    } on ApiException catch (e) {
+      if (e.statusCode == 404 || e.statusCode == 403) {
+        // Ride gone or not ours — stop polling; UI stays on current stage.
+        _stopStatusPolling();
+      }
+      // Transient network/5xx: keep polling silently.
+    } catch (_) {
+      // Ignore one-off failures; the next tick retries.
+    } finally {
+      _isPollingStatus = false;
+    }
+  }
+
+  /// Test seam for one authoritative status poll tick.
+  @visibleForTesting
+  Future<void> debugPollStatusOnce() => _pollStatusOnce();
 
   static BookingStage? _stageForStatus(String status) {
     switch (status) {
@@ -1129,6 +1144,8 @@ class RideProvider extends ChangeNotifier {
     unawaited(() async {
       final token = await _api.liveToken();
       if (token == null || token.isEmpty) return;
+      // Dispose/stop may have landed during the token mint.
+      if (_disposed || _trackingChannel != null) return;
       final wsUrl = _api.baseUrl
           .replaceFirst('https://', 'wss://')
           .replaceFirst('http://', 'ws://');

@@ -162,6 +162,8 @@ class NotificationProvider extends ChangeNotifier {
     // connecting (a stored snapshot is stale within a minute).
     final token = await _api.liveToken();
     if (token == null || token.isEmpty) return;
+    // Dispose/clear may have landed during the token mint.
+    if (_disposed || _channel != null) return;
 
     final wsUrl = _api.baseUrl
         .replaceFirst('https://', 'wss://')
