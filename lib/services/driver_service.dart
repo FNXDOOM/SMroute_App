@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../models/ride_request_record.dart';
 import '../services/api_client.dart';
 import '../services/geocoding_service.dart';
@@ -78,10 +80,22 @@ class DriverVehicle {
 ///   - accept / advance / complete a ride: `PATCH /rides/{id}/status`
 ///     (completing also returns the vehicle to idle, like the site)
 class DriverService {
-  DriverService._();
+  DriverService._([ApiClient? api]) : _api = api ?? ApiClient.instance;
   static final DriverService instance = DriverService._();
 
-  final ApiClient _api = ApiClient.instance;
+  /// An isolated service over a caller-supplied client, so the endpoints can
+  /// be exercised without a live backend.
+  @visibleForTesting
+  factory DriverService.withClient(ApiClient api) => DriverService._(api);
+
+  final ApiClient _api;
+
+  /// Tells dispatch this driver has the app open: `POST /auth/driver/presence`.
+  /// The backend only auto-assigns routes to drivers seen within its presence
+  /// window, so the console beats this while it is open (site: every 30 s).
+  Future<void> sendPresence() async {
+    await _api.postJson('/auth/driver/presence');
+  }
 
   Future<List<DriverVehicle>> listVehicles() async {
     final response = await _api.getJson('/vehicle/');

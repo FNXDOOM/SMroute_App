@@ -24,7 +24,8 @@ import '../services/geocoding_service.dart';
 ///
 /// Rides and vehicle state always come from the backend; nothing is simulated.
 class DriverProvider extends ChangeNotifier {
-  DriverProvider(this._auth);
+  DriverProvider(this._auth, {DriverService? service})
+      : _service = service ?? DriverService.instance;
 
   AuthProvider _auth;
 
@@ -32,7 +33,7 @@ class DriverProvider extends ChangeNotifier {
   /// login/logout (the proxy provider supplies the newest one).
   // ignore: use_setters_to_change_properties
   void refreshAuth(AuthProvider auth) => _auth = auth;
-  final DriverService _service = DriverService.instance;
+  final DriverService _service;
   final CarpoolService _carpool = CarpoolService.instance;
 
   List<DriverVehicle> _vehicles = [];
@@ -93,6 +94,29 @@ class DriverProvider extends ChangeNotifier {
   Timer? _boardPollTimer;
   bool _isRefreshingBoard = false;
   static const Duration _boardPollInterval = Duration(seconds: 6);
+
+  // Presence is the dispatch availability signal (site DriverView): the
+  // backend only auto-assigns routes to drivers seen within its 90 s presence
+  // window and reclaims offers from drivers who went quiet. Beat on console
+  // open, then every 30 s while it stays open — duty status is a separate axis.
+  Timer? _presenceTimer;
+  static const Duration _presenceInterval = Duration(seconds: 30);
+
+  void _startPresenceHeartbeat() {
+    _presenceTimer?.cancel();
+    unawaited(_beatPresence());
+    _presenceTimer =
+        Timer.periodic(_presenceInterval, (_) => unawaited(_beatPresence()));
+  }
+
+  Future<void> _beatPresence() async {
+    if (_disposed) return;
+    try {
+      await _service.sendPresence();
+    } catch (_) {
+      // Best effort — the next beat retries; a missed one is tolerated.
+    }
+  }
 
   List<DriverVehicle> get vehicles => List.unmodifiable(_vehicles);
   DriverVehicle? get myVehicle => _myVehicle;
@@ -337,6 +361,7 @@ class DriverProvider extends ChangeNotifier {
     // First load succeeded or failed either way — start the cadence the
     // website uses so incoming requests show up unprompted.
     _startBoardPolling();
+    _startPresenceHeartbeat();
   }
 
   void selectVehicle(DriverVehicle vehicle) {
@@ -584,6 +609,8 @@ class DriverProvider extends ChangeNotifier {
   void stopBoardPolling() {
     _boardPollTimer?.cancel();
     _boardPollTimer = null;
+    _presenceTimer?.cancel();
+    _presenceTimer = null;
     onNewPendingRide = null;
   }
 
@@ -597,6 +624,8 @@ class DriverProvider extends ChangeNotifier {
     _disposed = true;
     _boardPollTimer?.cancel();
     _boardPollTimer = null;
+    _presenceTimer?.cancel();
+    _presenceTimer = null;
     super.dispose();
   }
 }
