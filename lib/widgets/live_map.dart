@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter_map/flutter_map.dart';
+import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 import '../models/shared_route.dart';
@@ -157,6 +158,8 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
   MapTileSource? _source;
   NetworkTileProvider? _tileProvider;
   String? _providerForSource;
+  // flutter_map only closes clients it created itself; this one is ours.
+  http.Client? _ownedTileClient;
 
   // ── Vehicle motion ────────────────────────────────────────────────────────
   //
@@ -216,6 +219,7 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
   void dispose() {
     _ticker.dispose();
     _motionFrame.dispose();
+    _ownedTileClient?.close();
     super.dispose();
   }
 
@@ -388,9 +392,11 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
     // the provider to be rebuilt (and can't leave it holding a stale one).
     final key = '${source.id}|${source.headers['Authorization'] ?? ''}';
     if (_providerForSource != key) {
+      _ownedTileClient?.close();
+      _ownedTileClient = MapTiles.tileHttpClient(source);
       _tileProvider = NetworkTileProvider(
         headers: Map.of(source.headers),
-        httpClient: MapTiles.tileHttpClient(source),
+        httpClient: _ownedTileClient,
       );
       _providerForSource = key;
     }

@@ -122,7 +122,7 @@ class MapTiles {
   static const Duration probeTimeout = Duration(seconds: 8);
 
   static MapTileSource? _cached;
-  static String? _cachedToken;
+  static String? _cachedBase;
   static Future<MapTileSource>? _inFlight;
 
   /// Result of the last probe — exposed for the README's troubleshooting steps
@@ -171,9 +171,12 @@ class MapTiles {
       lastProbeNote = 'No session token yet — using the keyless fallback.';
       return fallback;
     }
-    if (_cached != null && _cachedToken == token) return _cached!;
-
     final base = api.baseUrl.replaceAll(RegExp(r'/$'), '');
+    // Keyed to the origin, not the token: Clerk JWTs rotate ~60 s and the
+    // exact-token key re-ran the 8 s probe on almost every map open. Logout
+    // clears the cache via reset(), so a signed-out session re-resolves.
+    if (_cached != null && _cachedBase == base) return _cached!;
+
     if (await _proxyServesTiles(base)) {
       lastProbeNote = 'Backend tile proxy OK — using the website\'s basemap.';
       final source = MapTileSource(
@@ -188,7 +191,7 @@ class MapTiles {
         usesSessionToken: true,
       );
       _cached = source;
-      _cachedToken = token;
+      _cachedBase = base;
       return source;
     }
 
@@ -219,6 +222,6 @@ class MapTiles {
   /// Clears the cache (logout, or a token refresh).
   static void reset() {
     _cached = null;
-    _cachedToken = null;
+    _cachedBase = null;
   }
 }
