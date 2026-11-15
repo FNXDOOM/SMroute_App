@@ -34,7 +34,14 @@ void main() {
     );
     final provider = RideProvider(api: client);
     provider.debugSetRides(
-      [RideRequestRecord.fromJson({'id': rideId, 'status': 'arriving'})],
+      [RideRequestRecord.fromJson({
+        'id': rideId,
+        'status': 'arriving',
+        'pickup_lat': 12.9716,
+        'pickup_lng': 77.5946,
+        'dest_lat': 12.9352,
+        'dest_lng': 77.6245,
+      })],
       currentRideId: rideId,
     );
     provider.debugSetVehicle(AssignedVehicle(

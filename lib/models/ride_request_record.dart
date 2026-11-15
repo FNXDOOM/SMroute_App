@@ -70,9 +70,12 @@ class RideRequestRecord {
   }
 
   static double _parseCoord(dynamic raw) {
-    if (raw is num) return raw.toDouble();
-    if (raw is String) return double.tryParse(raw) ?? 0.0;
-    return 0.0;
+    final value =
+        raw is num ? raw.toDouble() : double.tryParse(raw?.toString() ?? '');
+    if (value == null) {
+      throw const FormatException('Ride record missing valid coordinates');
+    }
+    return value;
   }
 
   factory RideRequestRecord.fromJson(Map<String, dynamic> json) {

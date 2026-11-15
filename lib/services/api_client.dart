@@ -306,6 +306,10 @@ class ApiClient {
       return _decodeResponse(response);
     } on TimeoutException {
       throw ApiException(0, 'Request timed out. Check your connection.');
+    } on http.ClientException {
+      // Socket/DNS failures arrive as ClientException (the socket variant also
+      // implements SocketException) — map them so isNetworkFailure sees them.
+      throw ApiException(0, 'Could not reach the server. Check your connection.');
     }
   }
 
