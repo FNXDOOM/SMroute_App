@@ -42,6 +42,7 @@ class RazorpayService {
       );
     }
 
+    _cancelPendingCheckout();
     final completer = Completer<bool>();
     _completer = completer;
 
@@ -129,14 +130,22 @@ class RazorpayService {
     );
   }
 
-  static void _onExternalWallet(PaymentSuccessResponse response) {
+  static void _onExternalWallet(ExternalWalletResponse response) {
     // Informational only — the actual capture still ends in the success
     // event, which drives verification.
   }
 
-  /// Clears any pending checkout state (logout / ride reset). Any open
-  /// checkout completes with a failure event on its own.
+  /// Clears any pending checkout state (logout / ride reset), completing its
+  /// future with a failure so the caller never awaits a dropped checkout.
   static void reset() {
+    _cancelPendingCheckout();
+  }
+
+  static void _cancelPendingCheckout() {
+    final completer = _completer;
     _completer = null;
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(ApiException(0, 'Checkout was cancelled.'));
+    }
   }
 }
