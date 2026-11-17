@@ -62,9 +62,11 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(ok
-              ? 'Position shared with dispatch'
-              : (provider.error ?? 'Could not get a GPS fix')),
+          content: Text(
+            ok
+                ? 'Position shared with dispatch'
+                : (provider.error ?? 'Could not get a GPS fix'),
+          ),
         ),
       );
   }
@@ -80,9 +82,13 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(goingOnDuty
-              ? (ok ? "You're on duty" : (provider.error ?? 'Update failed'))
-              : (ok ? "You're off duty" : (provider.error ?? 'Update failed'))),
+          content: Text(
+            goingOnDuty
+                ? (ok ? "You're on duty" : (provider.error ?? 'Update failed'))
+                : (ok
+                      ? "You're off duty"
+                      : (provider.error ?? 'Update failed')),
+          ),
         ),
       );
   }
@@ -95,9 +101,11 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(ok
-              ? 'Ride #${ride.id} accepted'
-              : (provider.error ?? 'Could not accept ride')),
+          content: Text(
+            ok
+                ? 'Ride #${ride.id} accepted'
+                : (provider.error ?? 'Could not accept ride'),
+          ),
         ),
       );
   }
@@ -115,9 +123,11 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(ok
-              ? 'Ride #${ride.id} · ${labels[next] ?? next}'
-              : (provider.error ?? 'Update failed')),
+          content: Text(
+            ok
+                ? 'Ride #${ride.id} · ${labels[next] ?? next}'
+                : (provider.error ?? 'Update failed'),
+          ),
         ),
       );
   }
@@ -189,8 +199,10 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
               PageHeader(
                 title: 'Driver console',
                 description: () {
-                  final name =
-                      context.read<AuthProvider>().currentUser?.firstName;
+                  final name = context
+                      .read<AuthProvider>()
+                      .currentUser
+                      ?.firstName;
                   return name == null ? 'Dispatch board' : 'Welcome, $name';
                 }(),
                 onBack: () => Navigator.maybePop(context),
@@ -234,8 +246,9 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
                         Expanded(
                           child: AppButton(
                             label: onDuty ? 'Go off duty' : 'Go on duty',
-                            variant:
-                                onDuty ? AppButtonVariant.secondary : AppButtonVariant.primary,
+                            variant: onDuty
+                                ? AppButtonVariant.secondary
+                                : AppButtonVariant.primary,
                             loading: provider.isBusy,
                             onPressed: vehicle == null ? null : _toggleDuty,
                           ),
@@ -244,7 +257,9 @@ class _DriverConsoleScreenState extends State<DriverConsoleScreen> {
                         IconSquareButton(
                           icon: Icons.my_location,
                           tooltip: 'Update my position',
-                          onTap: provider.isUpdatingLocation ? null : _pushLocation,
+                          onTap: provider.isUpdatingLocation
+                              ? null
+                              : _pushLocation,
                         ),
                       ],
                     ),
@@ -354,17 +369,22 @@ class _AssignedRoutePanel extends StatelessWidget {
         SheetHeader(
           eyebrow: 'Assigned route',
           title: 'Your pooled stops',
-          subtitle: '${route.stops.length} stops · '
+          subtitle:
+              '${route.stops.length} stops · '
               '${(route.distanceMeters / 1000).toStringAsFixed(1)} km pooled',
           // The problem the solver ran: pdp pools pickups and drop-offs.
           trailing: StatusBadge(status: route.problem),
         ),
         const SizedBox(height: AppSpacing.sm),
+        if (route.needsReoptimization) ...[
+          const ErrorBanner(message: SharedRoute.recalculationWarning),
+          const SizedBox(height: AppSpacing.sm),
+        ],
         LiveMap(
           height: 230,
           cameraPadding: const EdgeInsets.all(32),
-          route: route.geometry,
-          routeSegments: route.legPoints,
+          route: route.navigationGeometry,
+          routeSegments: route.navigationLegPoints,
           segmentsMode: provider.routeDisplay == RouteDisplayMode.segments,
           routeStops: route.stops,
           // The next stop is drawn in the accent, like the passenger's own.
@@ -383,7 +403,9 @@ class _AssignedRoutePanel extends StatelessWidget {
           ],
         ),
         const SizedBox(height: AppSpacing.sm),
-        if (next == null)
+        if (route.needsReoptimization)
+          const InfoRow(label: 'Navigation', value: 'Waiting for updated route')
+        else if (next == null)
           const InfoRow(
             icon: Icons.check_circle_outline,
             label: 'No stops left',
@@ -393,14 +415,15 @@ class _AssignedRoutePanel extends StatelessWidget {
           InfoRow(
             icon: Icons.navigation_outlined,
             label: 'Next stop',
-            value: 'Stop ${next.stop.sequence + 1} · '
+            value:
+                'Stop ${next.stop.sequence + 1} · '
                 '${_stopKind(next.stop)} · ${_rideCount(next.stop)}',
           ),
           const SizedBox(height: AppSpacing.xxs),
           Text(
             provider.pendingStopCount > 1
                 ? '${_distanceLabel(next)} · '
-                    '${provider.pendingStopCount} stops to go'
+                      '${provider.pendingStopCount} stops to go'
                 : '${_distanceLabel(next)} · last stop',
             style: AppType.small.copyWith(color: AppColors.textSecondary),
           ),
@@ -455,7 +478,9 @@ class _CarpoolRunEntry extends StatelessWidget {
         children: [
           SheetHeader(
             eyebrow: 'Carpool',
-            title: accepted ? 'Carpool run in progress' : 'Carpool run assigned',
+            title: accepted
+                ? 'Carpool run in progress'
+                : 'Carpool run assigned',
             subtitle:
                 '${provider.carpoolRiderCount} / ${provider.carpoolCapacity} passengers · '
                 '${route.stops.length} stops',
@@ -504,10 +529,7 @@ class _DriverRideCard extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: Text(
-                  'Ride #${ride.id}',
-                  style: AppType.smallStrong,
-                ),
+                child: Text('Ride #${ride.id}', style: AppType.smallStrong),
               ),
               StatusBadge(status: ride.status),
             ],

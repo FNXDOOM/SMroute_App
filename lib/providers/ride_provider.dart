@@ -23,13 +23,16 @@ enum BookingStage { matching, found, arriving, completed, cancelled }
 
 /// Payment state machine for the active ride's fare (website's
 /// RazorpayPayment phases: idle → creating → paying → verifying → paid |
-/// failed). Success is only ever derived from `POST /payments/verify`.
+/// pending | reconciliationRequired | failed). Success comes only from the
+/// backend's verification response or its persisted payment status.
 enum PaymentPhase {
   idle,
   creating,
   paying,
   verifying,
   paid,
+  pending,
+  reconciliationRequired,
   failed,
 }
 
@@ -40,12 +43,18 @@ class PaymentFlowException implements Exception {
 }
 
 class RideProvider extends ChangeNotifier {
-  RideProvider({ApiClient? api, CarpoolService? carpool})
-      : _api = api ?? ApiClient.instance,
-        _carpool = carpool ?? CarpoolService.instance;
+  RideProvider({
+    ApiClient? api,
+    CarpoolService? carpool,
+    Future<bool> Function(Map<String, dynamic>)? checkout,
+  }) : _api = api ?? ApiClient.instance,
+       _carpool = carpool ?? CarpoolService.instance,
+       _checkout =
+           checkout ?? ((order) => RazorpayService.pay(checkout: order));
 
   final ApiClient _api;
   final CarpoolService _carpool;
+  final Future<bool> Function(Map<String, dynamic>) _checkout;
 
   String? _destination;
   GeoPoint? _destinationPoint;
@@ -99,21 +108,70 @@ class RideProvider extends ChangeNotifier {
   // ── Fare payment (website's RazorpayPayment on the active-ride card) ────
   PaymentPhase _paymentPhase = PaymentPhase.idle;
   String? _paymentError;
+  int _paymentRevision = 0;
+  bool _paymentOperationInFlight = false;
   PaymentPhase get paymentPhase => _paymentPhase;
   String? get paymentError => _paymentError;
   bool get isPaying =>
+      _paymentOperationInFlight ||
       _paymentPhase == PaymentPhase.creating ||
       _paymentPhase == PaymentPhase.paying ||
       _paymentPhase == PaymentPhase.verifying;
 
+  bool get paymentNeedsStatusCheck =>
+      _paymentPhase == PaymentPhase.pending ||
+      _paymentPhase == PaymentPhase.reconciliationRequired;
+
+  String? get fareUnavailableReason {
+    final ride = activeRideRecord;
+    if (ride == null) return 'No booking is selected.';
+    if (ride.status == 'cancelled') return 'Cancelled rides cannot be paid.';
+    if (ride.rideOptionId?.trim().isNotEmpty != true) {
+      return 'This booking has no stored fare option. Contact support before paying.';
+    }
+    return null;
+  }
+
+  bool get canResumePayment =>
+      _paymentPhase == PaymentPhase.pending &&
+      !isPaying &&
+      fareUnavailableReason == null;
+
+  String get paymentActionLabel => switch (_paymentPhase) {
+    PaymentPhase.paid => 'Fare paid — thank you',
+    PaymentPhase.pending ||
+    PaymentPhase.reconciliationRequired => 'Check payment status',
+    PaymentPhase.verifying => 'Checking payment status…',
+    _ => 'Pay fare · Razorpay',
+  };
+
+  bool _paymentContextMatches(int rideId, int revision) =>
+      !_disposed && _currentRideId == rideId && _paymentRevision == revision;
+
   /// Full website checkout flow: create-order → native checkout → verify.
-  /// Returns true only after the backend confirms the payment signature.
-  Future<bool> payActiveRideFare() async {
+  /// Pending/blocked payments check history instead of reopening checkout.
+  /// Resuming is explicit; the server decides whether an order can be reused.
+  Future<bool> payActiveRideFare({bool resumePending = false}) async {
     final rideId = _currentRideId;
     final ride = activeRideRecord;
     if (rideId == null || ride == null || isPaying) return false;
     if (_paymentPhase == PaymentPhase.paid) return true;
+    if (paymentNeedsStatusCheck &&
+        (!resumePending ||
+            _paymentPhase == PaymentPhase.reconciliationRequired)) {
+      return checkActiveRidePayment();
+    }
+    final unavailable = fareUnavailableReason;
+    if (unavailable != null) {
+      _paymentPhase = PaymentPhase.failed;
+      _paymentError = unavailable;
+      notifyListeners();
+      return false;
+    }
+    final revision = _paymentRevision;
+    var checkoutOpened = false;
 
+    _paymentOperationInFlight = true;
     _paymentError = null;
     _paymentPhase = PaymentPhase.creating;
     notifyListeners();
@@ -131,44 +189,153 @@ class RideProvider extends ChangeNotifier {
         throw PaymentFlowException('Unexpected payment response from server.');
       }
 
-      if (_disposed) return false;
+      if (!_paymentContextMatches(rideId, revision)) return false;
       _paymentPhase = PaymentPhase.paying;
       notifyListeners();
 
       // Opens native Checkout; completes only after /payments/verify.
-      final verified = await RazorpayService.pay(checkout: checkout);
-      if (_disposed) return verified;
+      checkoutOpened = true;
+      final verified = await _checkout(checkout);
+      if (!_paymentContextMatches(rideId, revision)) return false;
 
-      _paymentPhase = verified ? PaymentPhase.paid : PaymentPhase.failed;
+      _paymentPhase = verified ? PaymentPhase.paid : PaymentPhase.pending;
       if (!verified) {
-        _paymentError = 'The payment could not be verified. If you were '
-            'charged, it will settle automatically.';
+        _paymentError =
+            'Payment verification is pending. Check its status '
+            'before resuming the existing checkout.';
+        return await _tryReconcilePayment(rideId, revision);
       }
-      notifyListeners();
       return verified;
     } on ApiException catch (error) {
-      _paymentPhase = PaymentPhase.failed;
+      if (!_paymentContextMatches(rideId, revision)) return false;
+      _paymentPhase = error.statusCode == 409
+          ? PaymentPhase.reconciliationRequired
+          : (checkoutOpened || error.statusCode == 0 || error.statusCode >= 500)
+          ? PaymentPhase.pending
+          : PaymentPhase.failed;
       _paymentError = error.message;
-      notifyListeners();
+      if (paymentNeedsStatusCheck) {
+        return await _tryReconcilePayment(rideId, revision);
+      }
       return false;
     } on PaymentFlowException catch (error) {
-      _paymentPhase = PaymentPhase.failed;
+      if (!_paymentContextMatches(rideId, revision)) return false;
+      _paymentPhase = PaymentPhase.pending;
       _paymentError = error.message;
-      notifyListeners();
-      return false;
+      return await _tryReconcilePayment(rideId, revision);
     } catch (_) {
-      _paymentPhase = PaymentPhase.failed;
-      _paymentError = 'Could not complete the payment. Please try again.';
-      notifyListeners();
+      if (!_paymentContextMatches(rideId, revision)) return false;
+      _paymentPhase = PaymentPhase.pending;
+      _paymentError =
+          'Payment status is uncertain. Check its status before retrying.';
+      return await _tryReconcilePayment(rideId, revision);
+    } finally {
+      if (_paymentContextMatches(rideId, revision)) {
+        _paymentOperationInFlight = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<bool> _tryReconcilePayment(int rideId, int revision) async {
+    try {
+      return await _readPaymentStatus(rideId, revision);
+    } catch (_) {
+      // A failed status read is not proof of financial failure.
       return false;
     }
   }
 
-  void resetPaymentState() {
+  /// Reconcile with persisted server records, including delayed webhook updates.
+  Future<bool> checkActiveRidePayment() async {
+    final rideId = _currentRideId;
+    if (rideId == null || isPaying) return false;
+    final revision = _paymentRevision;
+    final previous = _paymentPhase;
+    _paymentOperationInFlight = true;
+    _paymentPhase = PaymentPhase.verifying;
+    notifyListeners();
+    try {
+      return await _readPaymentStatus(
+        rideId,
+        revision,
+        blocked: previous == PaymentPhase.reconciliationRequired,
+      );
+    } catch (_) {
+      if (_paymentContextMatches(rideId, revision)) {
+        _paymentPhase = previous == PaymentPhase.reconciliationRequired
+            ? previous
+            : PaymentPhase.pending;
+        _paymentError ??=
+            'Could not check payment status. Try the status check again.';
+      }
+      return false;
+    } finally {
+      if (_paymentContextMatches(rideId, revision)) {
+        _paymentOperationInFlight = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<bool> _readPaymentStatus(
+    int rideId,
+    int revision, {
+    bool? blocked,
+  }) async {
+    final keepBlocked =
+        blocked ?? (_paymentPhase == PaymentPhase.reconciliationRequired);
+    final response = await _api.getJson('/payments/mine');
+    if (!_paymentContextMatches(rideId, revision)) return false;
+    if (response is! List) {
+      throw PaymentFlowException('Invalid payment history');
+    }
+    final records =
+        response
+            .whereType<Map<String, dynamic>>()
+            .where((row) => int.tryParse('${row['ride_request_id']}') == rideId)
+            .toList()
+          ..sort(
+            (a, b) => (int.tryParse('${b['id']}') ?? 0).compareTo(
+              int.tryParse('${a['id']}') ?? 0,
+            ),
+          );
+    final status = records.isEmpty ? null : records.first['status']?.toString();
+    if (status == 'paid') {
+      _paymentPhase = PaymentPhase.paid;
+      _paymentError = null;
+      return true;
+    }
+    if (status == 'refunded') {
+      _paymentPhase = PaymentPhase.reconciliationRequired;
+      _paymentError =
+          'This payment was refunded. Contact support before paying again.';
+    } else if (keepBlocked) {
+      _paymentPhase = PaymentPhase.reconciliationRequired;
+    } else if (status == 'failed') {
+      _paymentPhase = PaymentPhase.failed;
+      _paymentError = 'The payment attempt failed. You can retry checkout.';
+    } else {
+      _paymentPhase = PaymentPhase.pending;
+      _paymentError =
+          'Payment is not yet confirmed. Check its status or '
+          'explicitly resume the existing checkout. Contact support if you were charged.';
+    }
+    return false;
+  }
+
+  void _clearPaymentState() {
+    _paymentRevision++;
+    _paymentOperationInFlight = false;
     _paymentPhase = PaymentPhase.idle;
     _paymentError = null;
+  }
+
+  void resetPaymentState() {
+    _clearPaymentState();
     notifyListeners();
   }
+
   Timer? _statusPollTimer;
   bool _isPollingStatus = false;
   String? _lastPolledBackendStatus;
@@ -248,7 +415,10 @@ class RideProvider extends ChangeNotifier {
 
   /// True when there is more than one leg to draw — the only case where the
   /// single-line/segments toggle is offered.
-  bool get hasSegmentedRoute => (sharedRoute?.isMultiStop ?? false);
+  bool get routeNeedsReoptimization =>
+      sharedRoute?.needsReoptimization ?? false;
+  bool get hasSegmentedRoute =>
+      !routeNeedsReoptimization && (sharedRoute?.isMultiStop ?? false);
 
   RouteDisplayMode get routeDisplay => _routeDisplay;
 
@@ -270,17 +440,20 @@ class RideProvider extends ChangeNotifier {
     _sharedRouteAttempts = 0;
   }
 
-  /// Resolves (once) the pooled route for the active ride. Runs on the existing
+  /// Resolves the pooled route for the active ride. Runs on the existing
   /// status tick: the ride has to be pooled first, which the backend only does
   /// after clustering, so a miss is retried for a bounded number of ticks.
-  Future<void> _ensureSharedRoute() async {
+  Future<void> _ensureSharedRoute({bool refresh = false}) async {
     final rideId = _currentRideId;
     final ride = activeRideRecord;
     if (rideId == null || ride == null) return;
     if (isRideTerminal) return;
     final key = '$rideId';
-    if (_sharedRouteRideKey == key && _sharedRoute != null) return;
-    if (_sharedRouteAttempts >= _maxSharedRouteAttempts) return;
+    if (!refresh && _sharedRouteRideKey == key && _sharedRoute != null) return;
+    if (_sharedRoute == null &&
+        _sharedRouteAttempts >= _maxSharedRouteAttempts) {
+      return;
+    }
     // Nothing has pooled this ride yet — the common single-passenger case.
     if (ride.virtualStopId == null) return;
     if (_isFetchingSharedRoute || _disposed) return;
@@ -290,8 +463,9 @@ class RideProvider extends ChangeNotifier {
     try {
       final json = await _api.getJson('/rides/$rideId/route');
       if (_disposed || _currentRideId != rideId) return;
-      final route =
-          json is Map<String, dynamic> ? SharedRoute.fromJson(json) : null;
+      final route = json is Map<String, dynamic>
+          ? SharedRoute.fromJson(json)
+          : null;
       _sharedRouteRideKey = key;
       if (route == null) {
         // The endpoint answered: this ride has no shared route. Keep the
@@ -302,7 +476,8 @@ class RideProvider extends ChangeNotifier {
       } else {
         final routeChanged = _sharedRoute?.routeId != route.routeId;
         _sharedRoute = route;
-        if (routeChanged || !route.isMultiStop) {
+        _sharedRouteAttempts = 0;
+        if (routeChanged || !route.isMultiStop || route.needsReoptimization) {
           _routeDisplay = RouteDisplayMode.single;
         }
       }
@@ -441,6 +616,7 @@ class RideProvider extends ChangeNotifier {
   /// The backend status stays the single source of truth: this only projects it
   /// onto the map, so there is no second state machine to keep in step.
   VehicleAnimation? get vehicleAnimation {
+    if (routeNeedsReoptimization) return null;
     final ride = activeRideRecord;
     if (ride == null) return null;
     return RideVehicleAnimation.forRide(
@@ -482,10 +658,7 @@ class RideProvider extends ChangeNotifier {
 
   /// Adopt a pickup: GPS fix, geocoder suggestion, or a point tapped on the
   /// map (already snapped to a road by the backend).
-  void setPickup({
-    required GeoPoint point,
-    required String label,
-  }) {
+  void setPickup({required GeoPoint point, required String label}) {
     _pickupPoint = point;
     _pickupLabel = label.trim().isEmpty ? 'Current location' : label.trim();
     _pickupConfirmed = true;
@@ -722,6 +895,7 @@ class RideProvider extends ChangeNotifier {
     final pickupLabel = _pickupConfirmed ? _pickupLabel : 'Current location';
 
     _isBooking = true;
+    _clearPaymentState();
     _isResolvingDestination = true;
     _error = null;
     _stage = BookingStage.matching;
@@ -742,8 +916,7 @@ class RideProvider extends ChangeNotifier {
       if (destinationPoint == null) {
         final resolved = await GeocodingService.resolve(_destination!);
         if (resolved == null) {
-          _error =
-              'Could not find "${_destination!}". Try a nearby landmark.';
+          _error = 'Could not find "${_destination!}". Try a nearby landmark.';
           return false;
         }
         destinationPoint = GeoPoint(resolved.lat, resolved.lng);
@@ -898,8 +1071,7 @@ class RideProvider extends ChangeNotifier {
 
   void reset() {
     RazorpayService.reset();
-    _paymentPhase = PaymentPhase.idle;
-    _paymentError = null;
+    _clearPaymentState();
     _destination = null;
     _destinationPoint = null;
     _pickupPoint = null;
@@ -927,6 +1099,7 @@ class RideProvider extends ChangeNotifier {
   /// "Dismiss · Book new ride" (site) — drops the finished ride from the panel
   /// without touching trip history.
   void dismissActiveRide() {
+    _clearPaymentState();
     _currentRideId = null;
     _assignedVehicle = null;
     _vehiclePollAttempts = 0;
@@ -964,8 +1137,10 @@ class RideProvider extends ChangeNotifier {
 
   void _startStatusPolling() {
     _stopStatusPolling();
-    _statusPollTimer =
-        Timer.periodic(_statusPollInterval, (_) => unawaited(_pollStatusOnce()));
+    _statusPollTimer = Timer.periodic(
+      _statusPollInterval,
+      (_) => unawaited(_pollStatusOnce()),
+    );
   }
 
   Future<void> _pollStatusOnce() async {
@@ -979,9 +1154,6 @@ class RideProvider extends ChangeNotifier {
     // The in-transit animation follows the road route; make sure we have it
     // (no-op once loaded). Runs on the existing 5 s status tick.
     unawaited(ensureActiveRideRoute());
-    // A pooled route can appear once the backend clusters the ride, so this
-    // is retried here rather than on a poller of its own.
-    unawaited(_ensureSharedRoute());
     try {
       final response = await _api.getJson('/rides/$rideId');
       // A dismiss/rebook may have landed while the request was in flight —
@@ -991,6 +1163,12 @@ class RideProvider extends ChangeNotifier {
         final backendStatus = (response['status'] ?? '').toString();
         final statusChanged = backendStatus != _lastPolledBackendStatus;
         _lastPolledBackendStatus = backendStatus;
+        // Fine stages and pickup associations may change without changing the
+        // coarse status. Keep the complete authoritative record when supplied.
+        final recordIndex = _myRides.indexWhere((ride) => ride.id == rideId);
+        if (recordIndex != -1 && response.containsKey('pickup_lat')) {
+          _myRides[recordIndex] = RideRequestRecord.fromJson(response);
+        }
         final stageFor = _stageForStatus(backendStatus);
         if (stageFor != null && stageFor != _stage) {
           // Advance the stage machine from authoritative server state.
@@ -1006,6 +1184,11 @@ class RideProvider extends ChangeNotifier {
           _applyStatusToRideRecord(backendStatus);
           notifyListeners();
         }
+        // A co-passenger cancellation changes this plan without changing our
+        // ride ID/status. Never cache live routing metadata indefinitely.
+        await _ensureSharedRoute(refresh: true);
+        if (_disposed || _currentRideId != rideId) return;
+        notifyListeners();
         // A vehicle may appear while we poll (backend jobs assign routes
         // asynchronously). If the dedicated vehicle poller had given up,
         // give it ONE fresh burst of attempts per status transition —
@@ -1149,9 +1332,9 @@ class RideProvider extends ChangeNotifier {
       final wsUrl = _api.baseUrl
           .replaceFirst('https://', 'wss://')
           .replaceFirst('http://', 'ws://');
-      final uri = Uri.parse('$wsUrl/tracking/ws').replace(
-        queryParameters: {'token': token},
-      );
+      final uri = Uri.parse(
+        '$wsUrl/tracking/ws',
+      ).replace(queryParameters: {'token': token});
       _trackingChannel = WebSocketChannel.connect(uri);
       _trackingSubscription = _trackingChannel!.stream.listen(
         (message) {
@@ -1229,7 +1412,9 @@ class RideProvider extends ChangeNotifier {
   void _startVehiclePositionFallback() {
     if (_vehicleFallbackTimer != null) return;
     _vehicleFallbackTimer = Timer.periodic(
-        _vehicleFallbackInterval, (_) => unawaited(_pollVehiclePositionFallback()));
+      _vehicleFallbackInterval,
+      (_) => unawaited(_pollVehiclePositionFallback()),
+    );
     unawaited(_pollVehiclePositionFallback());
   }
 

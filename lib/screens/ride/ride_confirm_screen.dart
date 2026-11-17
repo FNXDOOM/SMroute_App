@@ -9,6 +9,7 @@ import '../../services/geocoding_service.dart';
 import '../../services/routing_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/carpool_passenger_panel.dart';
+import '../../widgets/fare_payment_panel.dart';
 import '../../widgets/live_map.dart';
 import '../../widgets/ui_kit.dart';
 
@@ -172,15 +173,17 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
             fullBleed: true,
             pickup: pickup,
             destination: destination,
-            route: route,
+            route: provider.routeNeedsReoptimization ? const [] : route,
             // Pooled ride: the shared route's legs + numbered stops, with the
             // toggle that switches the map between the two drawings.
-            routeSegments: provider.sharedRoute?.legPoints,
+            routeSegments: provider.sharedRoute?.navigationLegPoints,
             segmentsMode: provider.routeDisplay == RouteDisplayMode.segments,
             routeStops: provider.sharedRoute?.stops ?? const [],
             mySegmentIndices: provider.sharedRoute?.myLegIndices ?? const [],
             // The walk from the rider's pickup to the assigned carpool stop.
-            walkRoute: provider.pickupWalkRoute,
+            walkRoute: provider.routeNeedsReoptimization
+                ? const []
+                : provider.pickupWalkRoute,
             onToggleSegments: provider.hasSegmentedRoute
                 ? provider.toggleRouteDisplay
                 : null,
@@ -318,12 +321,13 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                                   'arriving',
                                   'in_progress',
                                 }.contains(status)
-                                    ? 'Driver assigned'
-                                    : (provider.vehicleAssignmentTimedOut
-                                          ? 'Not available'
-                                          : 'Assigning…')),
+                                ? 'Driver assigned'
+                                : (provider.vehicleAssignmentTimedOut
+                                      ? 'Not available'
+                                      : 'Assigning…')),
                     ),
-                    if (_route != null) ...[
+                    if (_route != null &&
+                        !provider.routeNeedsReoptimization) ...[
                       const SizedBox(height: AppSpacing.xs),
                       InfoRow(
                         icon: Icons.route_outlined,
@@ -347,23 +351,7 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                         // Website parity: fare payment lives on the ride card
                         // (RazorpayPayment) — success only after the backend
                         // verifies the payment signature.
-                        AppButton(
-                          label: provider.paymentPhase == PaymentPhase.paid
-                              ? 'Fare paid — thank you'
-                              : 'Pay fare · Razorpay',
-                          icon: provider.paymentPhase == PaymentPhase.paid
-                              ? Icons.check_circle_outline
-                              : Icons.payment_outlined,
-                          loading: provider.isPaying,
-                          onPressed: provider.isPaying ||
-                                  provider.paymentPhase == PaymentPhase.paid
-                              ? null
-                              : () => _payFare(provider),
-                        ),
-                        if (provider.paymentError != null) ...[
-                          const SizedBox(height: AppSpacing.xs),
-                          ErrorBanner(message: provider.paymentError!),
-                        ],
+                        FarePaymentPanel(onPay: () => _payFare(provider)),
                       ] else
                         AppButton(label: 'Book another ride', onPressed: _home),
                       const SizedBox(height: AppSpacing.xs),

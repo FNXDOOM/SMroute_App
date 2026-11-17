@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/carpool_stage.dart';
+import '../models/shared_route.dart';
 import '../providers/ride_provider.dart';
 import '../theme/app_theme.dart';
 import 'carpool_stage_stepper.dart';
@@ -23,8 +24,7 @@ class CarpoolPassengerPanel extends StatelessWidget {
 
     final stop = provider.myPickupStop;
     final route = provider.sharedRoute;
-    final pickupStops =
-        route?.stops.where((s) => s.isPickup).length ?? 0;
+    final pickupStops = route?.stops.where((s) => s.isPickup).length ?? 0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -32,6 +32,10 @@ class CarpoolPassengerPanel extends StatelessWidget {
         const SheetHeader(eyebrow: 'Carpool', title: 'Your carpool ride'),
         const SizedBox(height: AppSpacing.sm),
         CarpoolStageStepper(stage: stage),
+        if (route?.needsReoptimization ?? false) ...[
+          const SizedBox(height: AppSpacing.sm),
+          const ErrorBanner(message: SharedRoute.recalculationWarning),
+        ],
         if (stop != null) ...[
           const SizedBox(height: AppSpacing.md),
           AppCard(
@@ -45,7 +49,7 @@ class CarpoolPassengerPanel extends StatelessWidget {
                   label: 'Walk to the assigned stop',
                   value: provider.pickupWalkMeters == null
                       ? '${stop.point.lat.toStringAsFixed(4)}, '
-                          '${stop.point.lng.toStringAsFixed(4)}'
+                            '${stop.point.lng.toStringAsFixed(4)}'
                       : _metres(provider.pickupWalkMeters!),
                 ),
                 const SizedBox(height: AppSpacing.xxs),
@@ -65,9 +69,10 @@ class CarpoolPassengerPanel extends StatelessWidget {
             icon: Icons.check_circle_outline,
             loading: provider.isConfirmingPickupStop,
             onPressed:
-                provider.canConfirmPickupStop && !provider.isConfirmingPickupStop
-                    ? () => _confirm(context, provider)
-                    : null,
+                provider.canConfirmPickupStop &&
+                    !provider.isConfirmingPickupStop
+                ? () => _confirm(context, provider)
+                : null,
           ),
         ],
         if (route != null && route.stops.isNotEmpty) ...[
@@ -82,7 +87,9 @@ class CarpoolPassengerPanel extends StatelessWidget {
                   waypointType: stop.waypointType,
                   // Other riders stay private on the passenger view.
                   riders: const [],
-                  walkMeters: stop.isMine && stop.isPickup ? stop.walkMeters : null,
+                  walkMeters: stop.isMine && stop.isPickup
+                      ? stop.walkMeters
+                      : null,
                 ),
             ],
             emptyHint: 'The pooled stops appear once your route is optimized.',

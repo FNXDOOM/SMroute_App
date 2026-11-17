@@ -64,8 +64,12 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
         sequenceByRide.putIfAbsent(rideId, () => stop.sequence);
       }
     }
-    final ordered = [...rides]..sort((a, b) => (sequenceByRide[a.id] ?? 1 << 30)
-        .compareTo(sequenceByRide[b.id] ?? 1 << 30));
+    final ordered = [...rides]
+      ..sort(
+        (a, b) => (sequenceByRide[a.id] ?? 1 << 30).compareTo(
+          sequenceByRide[b.id] ?? 1 << 30,
+        ),
+      );
 
     for (final ride in ordered) {
       final stage = provider.carpoolStageFor(ride);
@@ -113,11 +117,16 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
                 const EmptyState(
                   icon: Icons.alt_route,
                   title: 'No carpool run assigned',
-                  hint: 'Go on duty and share your position so dispatch can '
+                  hint:
+                      'Go on duty and share your position so dispatch can '
                       'assign a pooled route to your vehicle.',
                 )
               else ...[
                 _runHeader(provider, route),
+                if (route.needsReoptimization) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  const ErrorBanner(message: SharedRoute.recalculationWarning),
+                ],
                 if (!provider.carpoolAccepted) ...[
                   const SizedBox(height: AppSpacing.sm),
                   AppButton(
@@ -127,17 +136,17 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
                     onPressed: provider.isBusy
                         ? null
                         : () => _run(
-                              provider.acceptCarpoolRun,
-                              'Carpool run accepted',
-                            ),
+                            provider.acceptCarpoolRun,
+                            'Carpool run accepted',
+                          ),
                   ),
                 ],
                 const SizedBox(height: AppSpacing.lg),
                 LiveMap(
                   height: 240,
                   cameraPadding: const EdgeInsets.all(32),
-                  route: route.geometry,
-                  routeSegments: route.legPoints,
+                  route: route.navigationGeometry,
+                  routeSegments: route.navigationLegPoints,
                   segmentsMode:
                       provider.routeDisplay == RouteDisplayMode.segments,
                   routeStops: route.stops,
@@ -159,10 +168,12 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
                 SheetHeader(
                   eyebrow: 'Itinerary',
                   title: 'Pickups and drop-offs',
-                  subtitle: provider.nextStop == null
+                  subtitle: route.needsReoptimization
+                      ? 'Route update pending'
+                      : provider.nextStop == null
                       ? 'Every stop served'
                       : 'Next: ${_kind(provider.nextStop!.stop)} · '
-                          '${provider.pendingStopCount} stop(s) to go',
+                            '${provider.pendingStopCount} stop(s) to go',
                   trailing: StatusBadge(status: route.problem),
                 ),
                 if (provider.nextStop != null) ...[
@@ -181,8 +192,7 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
                   emptyHint: 'Stops appear once this run is optimized.',
                 ),
                 const SizedBox(height: AppSpacing.lg),
-                if (provider.carpoolAccepted)
-                  ..._actions(provider),
+                if (provider.carpoolAccepted) ..._actions(provider),
               ],
             ],
           ),
@@ -200,11 +210,16 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
           Row(
             children: [
               Expanded(
-                child: Text('Route ${route.routeId}', style: AppType.smallStrong),
+                child: Text(
+                  'Route ${route.routeId}',
+                  style: AppType.smallStrong,
+                ),
               ),
               StatusBadge(
                 status: accepted
-                    ? (route.carpoolRunStatus == 'completed' ? 'completed' : 'accepted')
+                    ? (route.carpoolRunStatus == 'completed'
+                          ? 'completed'
+                          : 'accepted')
                     : 'pending',
               ),
             ],
@@ -251,10 +266,7 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
   /// The longest walk any rider at this pickup must make, from their original
   /// pickup to the assigned stop. Straight line, matching the backend's own
   /// 150 m rule.
-  static double? _maxWalk(
-    RouteStop stop,
-    Map<int, RideRequestRecord> rides,
-  ) {
+  static double? _maxWalk(RouteStop stop, Map<int, RideRequestRecord> rides) {
     double? worst;
     for (final rideId in stop.passengerIds) {
       final ride = rides[rideId];
@@ -274,7 +286,8 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
     final anyBoarded = provider.carpoolRides.any(
       (ride) => provider.carpoolStageFor(ride) == CarpoolStage.boarded,
     );
-    final allDropped = provider.carpoolRides.isNotEmpty &&
+    final allDropped =
+        provider.carpoolRides.isNotEmpty &&
         provider.carpoolRides.every((ride) {
           const done = {
             CarpoolStage.droppedOff,
@@ -289,41 +302,41 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
       final stage = provider.carpoolStageFor(next);
       final (label, icon, action, success) = switch (stage) {
         CarpoolStage.assigned || CarpoolStage.driverAccepted => (
-            'Start navigation',
-            Icons.navigation_outlined,
-            () => provider.announcePickup(next),
-            'Notified rider #${next.id} you are on the way',
-          ),
+          'Start navigation',
+          Icons.navigation_outlined,
+          () => provider.announcePickup(next),
+          'Notified rider #${next.id} you are on the way',
+        ),
         CarpoolStage.driverArriving => (
-            'Arrived at stop',
-            Icons.place_outlined,
-            () => provider.markArrived(next),
-            'Rider #${next.id} told you have arrived',
-          ),
+          'Arrived at stop',
+          Icons.place_outlined,
+          () => provider.markArrived(next),
+          'Rider #${next.id} told you have arrived',
+        ),
         CarpoolStage.pickupReady => (
-            'Waiting for rider to confirm',
-            Icons.hourglass_empty,
-            null,
-            '',
-          ),
+          'Waiting for rider to confirm',
+          Icons.hourglass_empty,
+          null,
+          '',
+        ),
         CarpoolStage.passengerConfirmed => (
-            'Confirm passenger boarded',
-            Icons.person_add_alt_1_outlined,
-            () => provider.confirmBoarded(next),
-            'Rider #${next.id} is onboard',
-          ),
+          'Confirm passenger boarded',
+          Icons.person_add_alt_1_outlined,
+          () => provider.confirmBoarded(next),
+          'Rider #${next.id} is onboard',
+        ),
         CarpoolStage.boarded => (
-            'Start driving',
-            Icons.play_arrow,
-            () => provider.departCarpoolRun(),
-            'On the way',
-          ),
+          'Start driving',
+          Icons.play_arrow,
+          () => provider.departCarpoolRun(),
+          'On the way',
+        ),
         CarpoolStage.inTransit => (
-            'Confirm passenger dropped off',
-            Icons.person_remove_alt_1_outlined,
-            () => provider.confirmDropoff(next),
-            'Rider #${next.id} dropped off',
-          ),
+          'Confirm passenger dropped off',
+          Icons.person_remove_alt_1_outlined,
+          () => provider.confirmDropoff(next),
+          'Rider #${next.id} dropped off',
+        ),
         _ => ('', null, null, ''),
       };
 
@@ -365,10 +378,7 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
         loading: busy,
         onPressed: busy || !allDropped
             ? null
-            : () => _run(
-                  provider.completeCarpoolRun,
-                  'Carpool run completed',
-                ),
+            : () => _run(provider.completeCarpoolRun, 'Carpool run completed'),
       ),
     );
     if (!allDropped) {
@@ -384,10 +394,10 @@ class _CarpoolRunScreenState extends State<CarpoolRunScreen> {
   }
 
   static String _kind(RouteStop stop) => switch (stop.waypointType) {
-        'pickup' => 'Pickup ${stop.sequence + 1}',
-        'destination' => 'Drop-off ${stop.sequence + 1}',
-        _ => 'Stop ${stop.sequence + 1}',
-      };
+    'pickup' => 'Pickup ${stop.sequence + 1}',
+    'destination' => 'Drop-off ${stop.sequence + 1}',
+    _ => 'Stop ${stop.sequence + 1}',
+  };
 
   /// The rider's carpool stage, for the stop row's rider status.
   static String _stageLabel(DriverProvider provider, int rideId) {

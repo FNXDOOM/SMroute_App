@@ -16,6 +16,7 @@ import '../../services/location_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/bottom_nav_bar.dart';
 import '../../widgets/carpool_passenger_panel.dart';
+import '../../widgets/fare_payment_panel.dart';
 import '../../widgets/live_map.dart';
 import '../../widgets/ride_option_card.dart';
 import '../../widgets/ui_kit.dart';
@@ -291,10 +292,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     fullBleed: true,
                     pickup: pickupPoint,
                     destination: destPoint,
-                    route: provider.routeEstimate?.geometry ?? const [],
+                    route: provider.routeNeedsReoptimization
+                        ? const []
+                        : provider.routeEstimate?.geometry ?? const [],
                     // Pooled ride: the shared route's legs + numbered stops, with
                     // the toggle that switches the map between the two drawings.
-                    routeSegments: provider.sharedRoute?.legPoints,
+                    routeSegments: provider.sharedRoute?.navigationLegPoints,
                     segmentsMode:
                         provider.routeDisplay == RouteDisplayMode.segments,
                     routeStops: provider.sharedRoute?.stops ?? const [],
@@ -302,14 +305,15 @@ class _HomeScreenState extends State<HomeScreen> {
                         provider.sharedRoute?.myLegIndices ?? const [],
                     // The walk from the rider's pickup to the assigned carpool
                     // stop, when one has been resolved.
-                    walkRoute: provider.pickupWalkRoute,
+                    walkRoute: provider.routeNeedsReoptimization
+                        ? const []
+                        : provider.pickupWalkRoute,
                     onToggleSegments: provider.hasSegmentedRoute
                         ? provider.toggleRouteDisplay
                         : null,
                     // The panel covers the map's lower edge — keep the chip
                     // above it so it stays visible and tappable.
-                    bottomControlsInset:
-                        constraints.maxHeight * sheetFraction,
+                    bottomControlsInset: constraints.maxHeight * sheetFraction,
                     vehicles: hasVehicle
                         ? [
                             MapVehicle(
@@ -328,8 +332,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     initialCenter:
                         pickupPoint ?? GeocodingService.defaultPickup,
                     attribution: false,
-                    cameraPadding:
-                        const EdgeInsets.fromLTRB(48, 132, 48, 300),
+                    cameraPadding: const EdgeInsets.fromLTRB(48, 132, 48, 300),
                   ),
                 ),
                 topBar: _MapTopBar(
@@ -365,7 +368,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             _snack(
                               ok
                                   ? 'Payment successful — your fare has been '
-                                      'received.'
+                                        'received.'
                                   : (provider.paymentError ??
                                         'Payment not completed'),
                               isError: !ok,
@@ -848,10 +851,10 @@ class _ActiveRidePanel extends StatelessWidget {
     final vehicleLabel = vehicle != null
         ? vehicle.licensePlate
         : driverAssigned.contains(status)
-              ? 'Driver assigned'
-              : (provider.vehicleAssignmentTimedOut
-                    ? 'Not available for this ride'
-                    : 'Assigning a vehicle…');
+        ? 'Driver assigned'
+        : (provider.vehicleAssignmentTimedOut
+              ? 'Not available for this ride'
+              : 'Assigning a vehicle…');
 
     return AppCard(
       emphasis: true,
@@ -969,23 +972,7 @@ class _ActiveRidePanel extends StatelessWidget {
           const SizedBox(height: AppSpacing.md),
           // Website parity: RazorpayPayment renders on the active-ride card
           // for the whole ride (isRideActive), not only after completion.
-          AppButton(
-            label: provider.paymentPhase == PaymentPhase.paid
-                ? 'Fare paid — thank you'
-                : 'Pay fare · Razorpay',
-            icon: provider.paymentPhase == PaymentPhase.paid
-                ? Icons.check_circle_outline
-                : Icons.payment_outlined,
-            loading: provider.isPaying,
-            onPressed: provider.isPaying ||
-                    provider.paymentPhase == PaymentPhase.paid
-                ? null
-                : onPay,
-          ),
-          if (provider.paymentError != null) ...[
-            const SizedBox(height: AppSpacing.xs),
-            ErrorBanner(message: provider.paymentError!),
-          ],
+          FarePaymentPanel(onPay: onPay),
           const SizedBox(height: AppSpacing.xs),
           AppButton(
             label: 'Track live',

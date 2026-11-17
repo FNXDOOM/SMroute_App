@@ -7,7 +7,8 @@ enum RouteDisplayMode { single, segments }
 
 /// Straight-line distance, wrapped so the [SharedRoute.distanceMeters] field
 /// cannot shadow the shared geo helper inside the class body.
-double _straightLineMeters(GeoPoint from, GeoPoint to) => distanceMeters(from, to);
+double _straightLineMeters(GeoPoint from, GeoPoint to) =>
+    distanceMeters(from, to);
 
 // The backend sends typed JSON, but a malformed or partial payload must degrade
 // to "nothing to draw" rather than throw — the map always has the rider's own
@@ -175,6 +176,19 @@ class SharedRoute {
   /// The route plan's own state: `solved` | `completed` | `cancelled` | ...
   final String routeStatus;
 
+  /// The server retains the live plan, but its old geometry is not navigation.
+  bool get needsReoptimization => routeStatus == 'needs_reoptimization';
+
+  List<GeoPoint> get navigationGeometry =>
+      needsReoptimization ? const [] : geometry;
+
+  List<List<GeoPoint>> get navigationLegPoints =>
+      needsReoptimization ? const [] : legPoints;
+
+  static const recalculationWarning =
+      'Route update pending. Stops may have changed; navigation and ETA are '
+      'unavailable until the server provides an updated route.';
+
   /// This passenger's fine carpool stage, when the endpoint carries it.
   final String? carpoolStatus;
 
@@ -209,8 +223,7 @@ class SharedRoute {
   bool get isMultiStop => legs.length > 1;
 
   /// Legs as plain point lists, ready for the map's segment renderer.
-  List<List<GeoPoint>> get legPoints =>
-      [for (final leg in legs) leg.points];
+  List<List<GeoPoint>> get legPoints => [for (final leg in legs) leg.points];
 
   /// The stop this passenger boards at, or null when the route does not name
   /// it (the passenger's own pickup stop carries the walking distance).
@@ -237,10 +250,13 @@ class SharedRoute {
     for (var index = 0; index < stops.length; index++) {
       final stop = stops[index];
       if (stop.isDepot || stop.passengerIds.isEmpty) continue;
-      final stillPending =
-          stop.passengerIds.any((rideId) => !finishedRideIds.contains(rideId));
+      final stillPending = stop.passengerIds.any(
+        (rideId) => !finishedRideIds.contains(rideId),
+      );
       if (!stillPending) continue;
-      final metres = from == null ? null : _straightLineMeters(from, stop.point);
+      final metres = from == null
+          ? null
+          : _straightLineMeters(from, stop.point);
       return RouteNextStop(
         stop: stop,
         index: index,
@@ -274,8 +290,8 @@ class SharedRoute {
     return points;
   }
 
-  /// Null when there is nothing drawable — the caller then shows the rider's
-  /// own pickup → drop-off line instead.
+  /// Keep pending-update metadata even without geometry, so callers can warn
+  /// rather than silently fall back to navigation along the rider's old line.
   static SharedRoute? fromJson(Map<String, dynamic> json) {
     final legs = <SharedRouteLeg>[];
     final rawLegs = json['legs'];
@@ -300,7 +316,10 @@ class SharedRoute {
     }
 
     final geometry = parsePoints(json['geometry']);
-    if (geometry.length < 2 && legs.isEmpty) return null;
+    final pendingUpdate =
+        json['route_status'] == 'needs_reoptimization' &&
+        (json['route_id']?.toString().isNotEmpty ?? false);
+    if (geometry.length < 2 && legs.isEmpty && !pendingUpdate) return null;
 
     final myLegIndices = <int>[];
     final rawMyLegs = json['my_leg_indices'];
@@ -348,14 +367,16 @@ class SharedRoute {
         final lng = _asOptionalDouble(entry['lng']);
         if (lat == null || lng == null) continue;
         final passengerIds = _parseIds(entry['passenger_ids']);
-        stops.add(RouteStop(
-          sequence: _asInt(entry['sequence']),
-          point: GeoPoint(lat, lng),
-          waypointType: (entry['waypoint_type'] ?? '').toString(),
-          passengerCount: passengerIds.length,
-          isMine: false,
-          passengerIds: passengerIds,
-        ));
+        stops.add(
+          RouteStop(
+            sequence: _asInt(entry['sequence']),
+            point: GeoPoint(lat, lng),
+            waypointType: (entry['waypoint_type'] ?? '').toString(),
+            passengerCount: passengerIds.length,
+            isMine: false,
+            passengerIds: passengerIds,
+          ),
+        );
       }
     }
     stops.sort((a, b) => a.sequence.compareTo(b.sequence));
@@ -371,7 +392,10 @@ class SharedRoute {
       }
     }
 
-    if (geometry.length < 2 && legs.isEmpty) return null;
+    final pendingUpdate =
+        json['status'] == 'needs_reoptimization' &&
+        (json['route_id']?.toString().isNotEmpty ?? false);
+    if (geometry.length < 2 && legs.isEmpty && !pendingUpdate) return null;
 
     // A leg is the drive between two consecutive stops, so attribute each one
     // when the router returned them all (the same rule the backend applies).
@@ -409,6 +433,7 @@ class SharedRoute {
         json['estimated_duration_seconds'] ?? metadata['duration_seconds'],
       ),
       driverAccepted: metadata['driver_accepted'] == true,
+      routeStatus: (json['status'] ?? 'solved').toString(),
       isCarpoolRun: metadata['carpool_run'] == true,
       carpoolRunStatus: metadata['carpool_run_status']?.toString(),
     );
