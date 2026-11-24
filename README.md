@@ -6,19 +6,19 @@ backend, no database and no second auth system — every business operation goes
 through the existing FastAPI API, exactly like the website does.
 
 ```text
-                 ┌──────────────────────────┐
-                 │ Existing FastAPI backend │  (finalyr_project/backend)
-                 │ auth · rides · routing   │
-                 │ payments · tracking · WS │
-                 └────────────┬─────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-      Existing website                 This Flutter app
-      (frontend/)                      ApiClient — JWT bearer
-              └───────────────┬───────────────┘
-                              ▼
-                    Existing database
+                  ┌──────────────────────────┐
+                  │ Existing FastAPI backend │  (finalyr_project/backend)
+                  │ auth · rides · routing   │
+                  │ payments · tracking · WS │
+                  └────────────┬─────────────┘
+                               │
+               ┌───────────────┴───────────────┐
+               ▼                               ▼
+       Existing website                 This Flutter app
+       (frontend/)                      ApiClient — JWT bearer
+               └───────────────┬───────────────┘
+                               ▼
+                     Existing database
 
 Design language:  extracted from frontend/src/index.css + tailwind.config.js
 Business rules:   enforced by the backend, never re-implemented here
@@ -28,115 +28,24 @@ The app is a **map-first** mobile translation of the website: the site's
 full-bleed map plus floating booking panel becomes a full-bleed map plus a
 draggable bottom sheet.
 
----
+## Features
 
-## Screens and flows
+- **Booking** — GPS pickup, tap-to-pick on the map, place autocomplete,
+  live-traffic routing and ETA, ride tiers, one-tap request, cancel.
+- **Live tracking** — ride-stage stepper, assigned vehicle, position over
+  `/tracking/ws` snapped onto the road polyline, follow-camera in transit.
+- **Pooled (shared) rides** — the backend's optimized route drawn leg by leg,
+  with your own legs highlighted; the driver console shows the next stop.
+- **Payments** — Razorpay checkout with server-side verification; an
+  authorized-but-not-captured payment reconciles via `/payments/mine`.
+- **Driver console** (role-gated) — duty toggle, GPS push, dispatch board,
+  accept → arriving → in progress → completed.
+- **Notifications & trips** — real inbox with WebSocket push, full ride
+  history with per-trip detail.
 
-| Route | Screen | What it does |
-|---|---|---|
-| `/` | Bootstrap | Restores the session, then routes to Home or Login |
-| `/login` | Sign in | Email + password, or the email-code step for website accounts |
-| `/register` | Create account | Registers a passenger against `POST /auth/register` |
-| `/home` | Home | Full-bleed live map + draggable booking sheet: pickup, destination, live traffic, ride tiers, one primary CTA, recent rides, active-ride panel |
-| `/ride-select` | Location picker | Full-screen map, tap-to-pick (snap-to-road → reverse geocode), address search, confirm sheet — the site's *Choose on map* |
-| `/ride-confirm` | Live tracking | Full-bleed map with route + assigned vehicle, camera follows the vehicle while in transit; stage, cancel and actions in a sheet |
-| `/trips` | Trips | Real ride history with a trip-detail sheet (fare, H3 cell, vehicle, cancel) |
-| `/inbox` | Notifications | Real notifications, filters, mark-one/mark-all read, WebSocket push |
-| `/payment` | Payment | Real payment history from `GET /payments/mine` |
-| `/profile` | Profile | Name + phone editing (`PATCH /auth/me`), payment history, sign out |
-| `/driver` | Driver console (role-gated) | Vehicle + duty + GPS push, dispatch board, and the assigned pooled route drawn leg by leg with the next stop called out |
-
-**Primary journey** — book, watch, complete:
-
-```text
-Home (pickup + destination + tier)  →  POST /rides/request
-  → sheet switches to the active-ride panel (6-stage stepper, driver/vehicle)
-  → Track live                          →  GET /rides/{id} · /rides/{id}/vehicle
-  → vehicle appears                     →  /tracking/ws updates its position
-  → status = completed                  →  receipt + feedback
-```
-
----
-
-## Feature status
-
-**Live (real backend + database)**
-
-- Auth: register, login, session restore, logout — local JWT, with a Clerk
-  email-code path for accounts created on the website (see *Authentication*).
-- Booking: GPS pickup, tap-to-pick pickup/destination, debounced place
-  autocomplete, live-traffic routing and ETA, ride request, ride cancel.
-- Tracking: ride status polling, assigned-vehicle polling, live vehicle
-  position over `/tracking/ws`, follow-camera during `in_progress`.
-- Trips and trip detail, notifications (incl. realtime push), payment history,
-  profile updates.
-
-**Static by design (no backend counterpart)**
-
-- Ride-tier names, descriptions, ETAs and price ranges come from
-  `lib/models/mock_data.dart`. The backend exposes no pricing/quote endpoint.
-  Option **IDs must match** the backend's `RIDE_FARES` table
-  (`backend/services/razorpay_service.py`) because payment amounts are computed
-  server-side from them — the client can never invent a price.
-
-**Not implemented (honest gaps)**
-
-- **Post-ride feedback** — the backend has no rating model, route or column, so
-  the app no longer collects ratings. A previous screen posted to
-  `POST /rides/{id}/rating`, swallowed the resulting 404 and thanked the rider
-  for feedback that was then discarded; it has been removed rather than left to
-  pretend. Reinstating it needs the endpoint first.
-- **Admin portal** — the website's role-gated `AdminView` (driver verification,
-  jobs, analytics, demand heatmap) has no app equivalent.
-- **Vector map styling** — the website renders MapLibre from
-  `GET /maps/stadia/style.json` and repaints that vector style dark in the
-  browser. `flutter_map` renders raster only, so the app requests Stadia's
-  raster sibling of the same style through the backend proxy (see §Maps).
-  Same basemap, but the app can't reproduce the site's per-layer vector paint
-  rules (e.g. its custom road colour) — it gets the pre-rendered dark raster
-  instead.
-
-**Recently added (site parity)**
-
-- **Razorpay checkout** — the active-ride sheet now carries the website's
-  `RazorpayPayment` flow: `POST /payments/create-order` → native Razorpay
-  Checkout (`razorpay_flutter`) → `POST /payments/verify`. Success shows only
-  after the backend confirms the signature; the Key Secret never reaches the
-  app.
-- **Driver apply** — `POST /auth/driver/apply` with license plate (the site's
-  DriverApplyView), reachable from Profile for passengers.
-- **Driver console** (`/driver`, role-gated) — the site's DriverView on
-  mobile: vehicle auto-selection by `driver_user_id` (with picker fallback),
-  on/off duty via `PATCH /vehicle/{id}`, GPS position push via
-  `POST /tracking/vehicles/{id}/location`, dispatch board via `GET /rides/`,
-  and accept → arriving → in_progress → completed via `PATCH /rides/{id}/status`
-  (completing returns the vehicle to idle, like the site). The console also draws
-  the vehicle's **assigned pooled route** (see below) with the next stop called
-  out, refreshed on the same 6 s board poll.
-- **Pooled (shared) ride** — when the backend pools a ride into an optimized
-  route, `GET /rides/{id}/route` gives the app the whole route: every stop in
-  visit order, the drive split per leg, and which legs are the rider's own. A chip
-  on the map switches between the rider's own pickup → drop-off line and the
-  pooled route's legs (the chip is offered only when there is more than one leg),
-  with numbered stop pins and the rider's own leg in the accent colour.
-  `problem: "pdp"` means the route pools pickups *and* drop-offs; the older
-  `cvrp` fallback returns to the hub and has no per-rider drop-off.
-- **Driver's pooled route** — the console's route panel is fed by
-  `GET /route/history/{id}` (the route id sits on the vehicle row), mapped through
-  the same model the passenger view uses, so one map and one toggle serve both.
-  The driver's plan additionally names the rides at each stop, which is what makes
-  the **next stop to serve** callout possible: the first stop whose rides are not
-  yet terminal, with the straight-line distance from the vehicle's last pushed
-  position and an ETA from the route's own average speed. Completing a ride
-  advances the callout on the next poll. The passenger view keeps other riders
-  private and so never shows it.
-
-**Deliberately absent** — no mock fallbacks anywhere: a failing backend produces
-an error or empty state, never fabricated data. Wallet balances, stored cards
-and a "scheduled rides" list were removed because the backend has no such
-endpoints and the website has no such features.
-
----
+No mock fallbacks anywhere: a failing backend produces an error or empty
+state, never fabricated data. See [docs/screens-and-flows.md](docs/screens-and-flows.md)
+for the full route map and the honest list of gaps.
 
 ## Tech stack
 
@@ -152,9 +61,9 @@ endpoints and the website has no such features.
 | Auth (web accounts) | `clerk_flutter` (email one-time-code, session JWT) |
 | Storage | `shared_preferences` for the bearer token |
 
----
+## Quick start
 
-## Prerequisites
+**Prerequisites**
 
 1. **Flutter SDK** 3.x — verify with `flutter doctor`
 2. **Android Studio** or VS Code with the Flutter/Dart extensions
@@ -172,18 +81,17 @@ endpoints and the website has no such features.
 > `http://10.0.2.2:8000`. On a physical device use your machine's LAN IP or the
 > deployed HTTPS origin.
 
----
-
-## Configuration
+**Configuration**
 
 The API origin and Clerk key are build-time values, supplied either by
 `--dart-define` or by a config file via `--dart-define-from-file`:
 
 | File | Purpose |
 |---|---|
-| `config.prod.json` | Production build — `https://api.fnxdoom.in` + Clerk key |
+| `config.prod.json` | Production build — `https://api.fnxdoom.in` + Clerk key (gitignored) |
 | `config.dev.json` | Emulator build — `http://10.0.2.2:8000` + Clerk key |
 | `config.local.json` | Machine-specific overrides (gitignored) |
+| `config.prod.example.json` | Template to copy for a production build |
 
 ```jsonc
 {
@@ -207,238 +115,12 @@ response — the app needs no key material to run checkout.
 plus a reachable Clerk issuer. Without it the backend rejects native Clerk
 tokens and users fall back to email sign-in.
 
----
-
-## Backend contract
-
-```text
-Auth:            Authorization: Bearer <jwt>, Content-Type: application/json
-Error format:    {"detail": "<message>"} (FastAPI); 429 adds Retry-After
-Token:           local JWT (default 7 days, no refresh — re-login on expiry)
-                 or Clerk session JWT (~60 s — resolved live before every
-                 request, plus one refresh + retry if the backend reports one
-                 expired mid-flight)
-WebSocket auth:  ?token=<jwt> query param (backend's native-mobile fallback)
-Pagination:      notifications limit=1..100; rides/payments capped server-side
-Rate limits:     /auth/login 15/5min · /auth/register 5/h · /rides/request 20/min
-                 /geocode 60/min · /payments/create-order 10/10min
-```
-
-| Feature | Endpoint | Method | Auth | Request | Response | Screen |
-|---|---|---|---|---|---|---|
-| Register | `/auth/register` | POST | No | `{name,email,phone,password,role:"passenger"}` | `TokenResponse{access_token,user}` | Register |
-| Login | `/auth/login` | POST | No | `{email,password}` | `TokenResponse` (401 → Clerk email-code step) | Login |
-| Session restore | `/auth/me` | GET | Yes | – | `UserResponse` | Bootstrap |
-| Update profile | `/auth/me` | PATCH | Yes | `{name?,phone?}` (email is provider-owned) | `UserResponse` | Profile |
-| Search destination | `/geocode/search?query=` | GET | Yes | – | `[{lat,lng,label,raw}]` (India-only) | Booking |
-| Autocomplete | `/geocode/suggest?query=&lat=&lng=` | GET | Yes | – | same | Home |
-| Book ride | `/rides/request` | POST | Yes | `{pickup_lat/lng,dest_lat/lng,labels,ride_option_*}` | `RideRequestResponse` (201) | Home |
-| Trip history | `/rides/my-rides` | GET | Yes | – | `[RideRequestResponse]` | Trips, Home |
-| Ride status | `/rides/{id}` | GET | Yes | – | `RideRequestResponse` | Home, tracking |
-| Cancel ride | `/rides/{id}` | DELETE | Yes | – | `{status:...}` | Home, tracking, trip detail |
-| Assigned vehicle | `/rides/{id}/vehicle` | GET | Yes | – | `VehicleSnapshot` or `null` | Tracking |
-| Pooled route (rider) | `/rides/{id}/route` | GET | Yes | – | `RideRouteResponse` or `null` (stops, per-leg geometry, `my_leg_indices`) | Home, tracking |
-| Pooled route (driver) | `/route/history/{id}` | GET | Yes (admin/driver) | – | Route plan: `waypoints[]` with `passenger_ids`, `geometry`, `legs[]`, `problem` | Driver console |
-| Live tracking | `/tracking/ws?token=` | WS | Yes | – | `{type:"tracking_snapshot"\|"vehicle_location_update",...}` | Tracking |
-| Notifications | `/notifications/?limit=100` | GET | Yes | – | `{status,unread_count,notifications[]}` | Inbox, badge |
-| Mark all read | `/notifications/read-all` | PATCH | Yes | – | `{status,updated_count}` | Inbox |
-| Mark one read | `/notifications/{id}/read` | PATCH | Yes | – | `{status,notification}` | Inbox |
-| Notification push | `/notifications/ws?token=` | WS | Yes | – | `{type:"notification",notification:{...}}` | Inbox, ride stages |
-| Payment history | `/payments/mine` | GET | Yes | – | `[PaymentResponse]` | Payment |
-| Reverse geocode | `/geocode/reverse?lat=&lng=` | GET | Yes | – | `{lat,lng,label}` (India-only) | Map picker / GPS |
-| Snap to road | `/routing/nearest-road?lat=&lng=` | GET | Yes | – | `{lat,lng}` | Map picker |
-| Road route | `/routing/route?from_lat&from_lng&to_lat&to_lng&traffic` | GET | Yes | – | `{distanceMeters,durationSeconds,geometry:[[lng,lat]]}` | Home, tracking |
-| Map style (site) | `/maps/stadia/style.json` | GET | Yes | – | MapLibre style JSON | Not used (see gaps) |
-
-The backend is **India-guarded**: every ride write and geocode lookup outside
-the India bounding box is rejected (422). The client mirrors that check for a
-clear message but the server stays authoritative.
-
----
-
-## Authentication
-
-```text
-Register / Login → POST /auth/register | /auth/login → {access_token, user}
-  → token in SharedPreferences (smartroute_api_token)
-  → Authorization: Bearer <jwt> on every request (ApiClient.liveToken)
-
-Website account (its password lives in Clerk, not in the backend DB)
-  → POST /auth/login returns 401 by design
-  → clerk_flutter attemptSignIn(emailCode, identifier) emails a 6-digit code
-  → user enters the code → attemptSignIn(emailCode, code) verifies it
-  → ClerkAuthState.sessionToken().jwt (fresh, short-lived)
-  → same ApiClient storage; backend verifies it via Clerk JWKS (RS256)
-  → get_or_create_user_from_payload provisions/links the database user
-
-Token resolution (Clerk sessions only)
-  → every request asks ApiClient.liveToken() for the CURRENT token
-    (ClerkAuthState.sessionToken(), installed via setTokenRefresher);
-    concurrent refreshes are coalesced into a single mint
-  → 401 → refresh once → retry the request once. Never loops: if the
-    refresh returns the SAME token the request is not retried
-  → backend-native JWTs have no refresher, so a 401 stays a re-login
-
-App restart → same path, then GET /auth/me
-  → 200: restored · 401/403: token cleared → Login
-  → network/5xx: session kept and retried next launch (no forced logout)
-
-Logout → ClerkAuthService.signOut() (Clerk sessions) + token cleared
-       + per-account provider state cleared (rides, notifications, payments)
-```
-
-This Clerk instance has **password sign-in disabled** — email one-time-code is
-its only first factor — which is why the app mirrors the website's code flow
-instead of attempting passwords. Accounts created *inside the app* keep using
-the fast local-JWT path and never touch Clerk.
-
----
-
-## Design system
-
-All tokens live in `lib/theme/app_theme.dart` and come from the website:
-
-| Token | Value |
-|---|---|
-| Canvas / surface / nested | `#000000` / `#1F1F1F` / `#2A2A2A` |
-| Hairline border / strong | `#333333` / `#545454` |
-| Text primary / secondary / subtle | `#FFFFFF` / `#AFAFAF` / `#8A8A8A` |
-| Primary action (dark theme) | white background, black text |
-| Accent (status only) | `#276EF1` (completed) |
-| Error / warning | `#D93025` / `#F5A623` |
-| Radii | 6 · 8 · 12 · 16 |
-| Spacing | 4 · 8 · 12 · 16 · 20 · 24 · 32 · 48 · 64 (gutter 20) |
-| Shadows | `0 2px 8px 8%` · `0 8px 24px 12%` (floating surfaces only) |
-| Type | Inter metrics — 15 px body, −0.01/−0.02 em tracking, 11 px eyebrows at +0.08 em, tabular numerals |
-| Motion | 120 ms (press) · 180 ms (state) · 260 ms (sheet) · 420 ms (map camera) |
-
-`lib/widgets/ui_kit.dart` holds the components so screens never hand-roll
-colours, radii or type: `AppCard`, `AppButton`, `AppField`, `PlaceField`,
-`MapFirstScaffold`, `AppDraggableSheet`, `SheetPanel`/`SheetHeader`,
-`StatusBadge`, `RouteLeg`, `ListRow`, `SegmentedTabs`, `StarRating`, `AppChip`,
-`EmptyState`, `SkeletonRows`, `RideStageStepper`, `PressableScale`.
-
-Loading uses skeletons rather than spinners; empty states are first-class; ride
-progress is defined once in `lib/models/ride_stage.dart` (the site's six stages)
-so every screen shows the same step for the same backend status.
-
----
-
-## Maps
-
-The basemap is resolved once per session by `lib/services/map_tiles.dart`:
-
-1. **Preferred** — the website's own Stadia basemap, dark variant
-   (`alidade_smooth_dark`), fetched through the backend's authenticated proxy:
-   `GET /maps/stadia/resource/tiles/alidade_smooth_dark/{z}/{x}/{y}.png` with the
-   session bearer token. The API key stays server-side, so no map key is compiled
-   into the app. flutter_map fetches tiles from Dart, which means — unlike
-   MapLibre's native fetches — it *can* attach the `Authorization` header.
-2. **Fallback** — only when the proxy can't serve tiles at all (no token yet,
-   offline, or the backend's Stadia key unset): keyless CARTO `dark_all`,
-   brightened by a colour matrix because its own road casing is near-black and
-   disappears against our canvas.
-
-A single probe tile decides between them (8 s timeout, response must be a real
-PNG), so the app never renders a half-broken tile layer.
-
-**Why this matters.** The previous CARTO-only basemap measured *median luma 9*,
-with ~80 % of pixels between `#030303` and `#0D0D0D` and roads at
-`#111111`–`#222222` — against our own `#000000` canvas. The tiles were loading
-perfectly and the map was still effectively invisible. Stadia's dark raster
-measures median luma ~52 with roads at `#333333`–`#4F4F4F`, so the map reads as a
-map. On-device the map area went from 9 → 56 median luma.
-
-**Known backend issue** — `GET /maps/stadia/resource/...@2x.png` answers **500**
-sporadically (13 of roughly 30 tiles in one measured session, each failure a
-black hole in the map), while Stadia serves the identical URL with 200 (6/6
-repeats). The app therefore requests plain 256 px tiles and retries 5xx twice via
-`RetryClient`; a full session after that change logged **zero** tile failures.
-Fixing it server-side would restore `@2x` sharpness on high-DPI phones.
-
----
-
-## Live ride animation
-
-The map's moving car is **derived from the ride status**, not from driver
-telemetry. That is not a shortcut — it is what the website does, and it is
-forced by the backend:
-
-- `run_simulate_ride_dispatch_job` (`backend/services/background_jobs.py`)
-  advances `assigned → arriving → in_progress → completed` on a **5 s timer**
-  and never writes `Vehicle.lat/lng`, so there is no driver movement to consume.
-- An admin/driver `PATCH /rides/{id}/status` **nulls `ride.virtual_stop_id`**,
-  after which `GET /rides/{id}/vehicle` returns `null` for the rest of the ride.
-
-So `lib/services/ride_vehicle_animation.dart` projects the status onto a path,
-exactly like `PassengerView.jsx`'s `simDriver`:
-
-| Status | Path | Duration |
-|---|---|---|
-| `pending`, `clustered` | none (no driver yet) | — |
-| `assigned` | pickup + (0.012, 0.0072) → pickup | 25 s |
-| `arriving` | pickup + (0.004, 0.0024) → pickup | 12 s |
-| `in_progress` | `RouteEstimate.geometry`, else a straight pickup → destination | 18 s |
-| `completed`, `cancelled` | none — the car settles and stops | — |
-
-A real fix (`/tracking/ws`, or the 4 s `GET /rides/{id}/vehicle` poll) always
-**beats** the synthetic start; the car is only fabricated when the backend has
-nothing to offer.
-
-`lib/widgets/live_map.dart` walks it. One `Ticker` drives two mechanisms, ported
-from `AppMap.jsx`: a **path walk** (`samplePath` — distance-weighted, `cos(lat)`
-corrected, heading from the segment) and a **1200 ms smoothstep retarget** for
-discrete position updates. The invariant that makes it feel continuous: each
-vehicle's motion holds the position it is *drawn* at, so a new GPS fix, a status
-change or a route arriving late all continue from there. `retargetPath()` keeps a
-same-goal transition (assigned → arriving) from reversing to the new synthetic
-offset. Only the vehicle `MarkerLayer` repaints per frame, and the ticker stops
-when everything settles.
-
-**Deliberate divergence from the website:** the site loops its animation
-(`loop: true`), so the car drives to the pickup and starts over. Ride tracking
-here is non-looping — the car settles at the pickup, follows the road route to
-the drop-off, and stops there.
-
----
-
-## Project structure
-
-```text
-lib/
-├── main.dart                    # providers, auth guard, eager Clerk init
-├── config/app_env.dart          # build-time API URL + Clerk key
-├── theme/app_theme.dart         # design tokens + ThemeData
-├── models/                      # user, ride_option, ride_request_record,
-│                                # ride_stage, assigned_vehicle, notification,
-│                                # payment_transaction, shared_route (pooled
-│                                # route, its legs and stops), mock_data
-├── providers/                   # auth, ride (booking/polling/tracking),
-│                                # notification, payment
-├── services/                    # api_client, geocoding, location, routing,
-│                                # map_tiles (basemap resolution),
-│                                # razorpay (checkout), driver (vehicle/board)
-│                                # clerk_auth
-├── screens/                     # auth, home, ride, trips, inbox, payment,
-│                                # profile, driver (console + apply)
-└── widgets/                     # ui_kit + live_map, bottom_nav_bar,
-                                 # ride_option_card, notification_tile
-test/                            # 113 widget, provider and model tests
-├── widget_test.dart             # screens, providers, ride lifecycle
-├── shared_route_test.dart       # pooled route, next stop, leg rendering
-├── backend_contract_test.dart   # API payload shapes
-├── live_map_motion_test.dart    # vehicle walk and retarget
-└── vehicle_animation_test.dart  # ride status → animated path
-```
-
----
-
-## Run, verify, build
+**Run, verify, build**
 
 ```bash
 flutter pub get
 flutter analyze                     # must report "No issues found!"
-flutter test                        # 113 tests
+flutter test                        # 168 tests
 
 # Run on an emulator against your local backend (or use config.local.json)
 flutter run --dart-define-from-file=config.dev.json
@@ -463,55 +145,53 @@ PY
 strings /tmp/apkchk/lib/arm64-v8a/libapp.so | grep -c "api.fnxdoom.in"
 ```
 
----
+Launcher icons are generated from `assets/branding/smroute_icon.png`:
 
-## Security review
+```bash
+python scripts/make_icons.py
+```
 
-- No secrets, keys or database credentials ship in the app; the bearer token is
-  the only stored credential (`shared_preferences` — use
-  `flutter_secure_storage` for a hardened production build).
-- Tokens are never logged. Dev request logging prints method/path/status/
-  duration, the token's remaining lifetime (decoded from the `exp` claim only)
-  and whether the request was retried — never the token itself or the
-  Authorization header — and compiles out of release builds (`kDebugMode`).
-- Payment trust boundary respected: all amounts are computed server-side; the
-  app never computes or posts an amount.
-- 401/403 clears the session; transient network failures do not log anyone out.
-- WebSocket auth uses the backend's documented `?token=` mobile fallback.
-- Production must be HTTPS/WSS with a non-localhost origin (enforced by the
-  config file you build with).
+## Project structure
 
-## Reliability behaviour
+```text
+lib/
+├── main.dart                    # providers, auth guard, eager Clerk init
+├── config/app_env.dart          # build-time API URL + Clerk key
+├── theme/app_theme.dart         # design tokens + ThemeData
+├── models/                      # user, ride_option, ride_request_record,
+│                                # ride_stage, carpool_stage, assigned_vehicle,
+│                                # notification, payment_transaction,
+│                                # shared_route, vehicle_animation, mock_data
+├── providers/                   # auth, ride (booking/polling/tracking/payments),
+│                                # driver, notification, payment
+├── services/                    # api_client, geocoding, location, routing,
+│                                # map_tiles (basemap), route_trace + passenger_motion
+│                                # (fix → road projection), razorpay, driver,
+│                                # carpool, clerk_auth, ride_vehicle_animation
+├── screens/                     # auth, home, ride, trips, inbox, payment,
+│                                # profile, driver (console, run, apply)
+└── widgets/                     # ui_kit + live_map, bottom_nav_bar, carpool
+                                 # panels/stepper/stop list, fare_payment_panel
+test/                            # 168 widget, provider, model and motion tests
+├── widget_test.dart             # screens, providers, ride lifecycle, payments
+├── route_trace_test.dart        # road projection (new)
+├── shared_route_test.dart       # pooled route, next stop, leg rendering
+├── live_map_motion_test.dart    # vehicle walk, retarget, fix snapping
+├── vehicle_animation_test.dart  # ride status → animated path
+└── ...                          # contract, carpool, razorpay, guards
+```
 
-- 15 s timeout on every request → `ApiException(0)`; transient failures never
-  masquerade as "logged out".
-- 429 responses surface the backend's `Retry-After` through
-  `ApiException.retryAfterSeconds`; the app does not auto-retry.
-- Session tokens are resolved per request, so a short-lived Clerk JWT (~60 s)
-  can't go stale mid-session. A 401 is answered with one fresh-token retry; if
-  the refresh returns the same token the 401 is surfaced instead of looping.
-- The map's authenticated tile proxy and both WebSockets (notifications,
-  tracking) also read the current token at connect/request time, so they can't
-  sit on an expired one.
-- Vehicle-assignment polling caps at ~30 attempts (~2 min) — dispatch is
-  job-driven and may never assign a vehicle for a given ride, so the UI shows a
-  clear "still assigning" state instead of spinning forever.
-- Ride-status polling (5 s) is a fallback for the notification socket, so the
-  stage machine cannot freeze when the socket is down.
-- The tracking socket reconnects up to 5 times with linear backoff; the
-  notifications socket up to 3 times (2 s/4 s/6 s).
+## Documentation
 
-## Troubleshooting
-
-| Symptom | Fix |
+| Doc | Contents |
 |---|---|
-| `flutter: command not found` | Add Flutter's `bin` to `PATH` |
-| `No devices found` | Start an emulator, or enable USB debugging and re-run `adb devices` |
-| `Gradle build failed` | `flutter clean && flutter pub get` |
-| Requests fail on a physical phone | You are probably pointing at `127.0.0.1`; rebuild with your LAN IP or the production origin |
-| "Sign-in did not complete" | The Clerk key is missing from the build config, or the backend lacks `CLERK_ALLOW_NATIVE_CLIENTS=true` |
-| Map is completely black | Tiles can't be fetched *and* the fallback is dark. Check `adb logcat \| grep "HTTP request failed"` — 401 means the token wasn't accepted by `/maps/stadia/resource`, 404/500 means the backend proxy (see §Maps) |
-| Map loads but looks empty/flat | You are on the brightened CARTO fallback: the app couldn't reach the backend tile proxy. Confirm the token is valid and the backend's `STADIA_API_KEY` is set |
+| [docs/screens-and-flows.md](docs/screens-and-flows.md) | Route map, primary journey, feature status, honest gaps |
+| [docs/backend-contract.md](docs/backend-contract.md) | Auth flows, endpoint table, payment trust boundary, socket revocation |
+| [docs/design-system.md](docs/design-system.md) | Colour/type/spacing/motion tokens, `ui_kit` components |
+| [docs/maps.md](docs/maps.md) | Basemap resolution (Stadia proxy vs CARTO fallback), known backend issue |
+| [docs/live-ride-animation.md](docs/live-ride-animation.md) | Status-derived vehicle animation, route projection, motion mechanics |
+| [docs/security-and-reliability.md](docs/security-and-reliability.md) | Security review, reliability behaviour, troubleshooting |
+| [docs/rfc-endpoint-registry.md](docs/rfc-endpoint-registry.md) | Proposed typed endpoint catalog (design RFC) |
 
 ## License
 

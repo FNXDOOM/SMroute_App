@@ -1,5 +1,5 @@
 name: finalyr_app
-description: "A new Flutter project."
+description: "SmartRoute mobile client — a map-first Flutter app for the SmartRoute shared-ride FastAPI backend (auth, booking, live tracking, pooled routes, Razorpay payments, driver console)."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

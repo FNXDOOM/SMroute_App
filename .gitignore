@@ -61,3 +61,6 @@ config.prod.json
 .commandcode/
 .freebuff/
 .downscale.py
+
+# local DevTools extension state (never commit)
+devtools_options.yaml
