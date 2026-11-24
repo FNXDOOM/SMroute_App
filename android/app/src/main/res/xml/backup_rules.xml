@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The session token is stored in Keystore-backed secure storage; exclude
+     everything from full backups so no credential can leave the device. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="root" path="." />
+</full-backup-content>

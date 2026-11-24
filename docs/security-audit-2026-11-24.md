@@ -25,7 +25,30 @@ socket. The real risks are **credential hygiene** (plaintext secrets file),
 **session/token lifetime on the device**, and a few **hardening gaps** listed
 below.
 
-## Confirmed findings
+## Remediation status (updated 2026-11-24)
+
+| ID | Finding | Status |
+|---|---|---|
+| F1 | Secrets in plaintext `backend/.env` | **Action required — rotate now.** Code-side prevention added (gitleaks pre-commit); the values themselves can only be rotated in each provider's dashboard (Supabase, Clerk, Razorpay, Stadia) plus a new `LOCAL_JWT_SECRET`. |
+| F2 | Token in plaintext app storage / backup enabled | **Fixed** — token moved to Keystore/Keychain (`flutter_secure_storage`), legacy value migrated and deleted, `allowBackup=false` + backup/data-extraction rules exclude everything. |
+| F3 | Email change without step-up | **Fixed** — `PATCH /auth/me` now requires `current_password` for a local account's email change (403 otherwise); Clerk-owned accounts cannot change email there at all. Verified live. |
+| F4 | Demo/predict endpoints ungated | **Fixed** — demo endpoints refuse non-admins when `APP_ENV=production` (still work in dev for presentations); `/predict/demand` and `/predict/heatmap` require admin or an active driver. Verified live. |
+| F5 | No TLS pinning | **Open (accepted)** — documented hardening item; needs a pinned certificate set before it can be implemented. |
+
+### F2 verification
+
+- `lib/services/api_client.dart`: `SecureTokenStore` (Android Keystore-backed
+  EncryptedSharedPreferences / iOS Keychain) is the default; a legacy token in
+  `SharedPreferences` is migrated to the secure store and the plaintext key
+  deleted on first boot. Test-only `InMemoryTokenStore` keeps unit tests
+  hermetic.
+- `android/app/src/main/AndroidManifest.xml`: `allowBackup="false"` plus
+  `fullBackupContent` / `dataExtractionRules` that exclude shared prefs and
+  databases from cloud backup and device transfer.
+- Verified: `flutter analyze` clean, 168/168 Flutter tests pass on a device-free
+  test run.
+
+**Confirmed findings**
 
 ### F1 — Backend secrets live in a plaintext `.env` on disk (High, operational)
 - **Where:** `finalyr_project/backend/.env` contains a live Supabase pooler
@@ -104,18 +127,37 @@ below.
 ## Recommendations (priority order)
 
 1. **Rotate all secrets in `backend/.env` today** and move them out of the repo
-   machine (F1).
-2. Disable Android backup + move the token to secure storage + add token
-   revocation (F2).
-3. Require step-up auth for email change (F3).
-4. Gate demo/predict endpoints by role or environment (F4).
-5. Add TLS pinning for the API host (F5).
-6. Keep the existing strengths: ownership checks, real-IP rate limiting,
+   machine (F1). Code-side prevention (gitleaks pre-commit) is in place, but
+   only you can rotate the values in the Supabase / Clerk / Razorpay / Stadia
+   dashboards and mint a new `LOCAL_JWT_SECRET`.
+2. **Token revocation** — the 7-day local JWT still cannot be revoked
+   server-side; adding a denylist (`jti`) or shortening
+   `LOCAL_JWT_EXPIRES_MINUTES` closes the remaining window from F2.
+3. **TLS pinning** for the API host (F5) once a pinned certificate set exists.
+4. Keep the existing strengths: ownership checks, real-IP rate limiting,
    driver-status enforcement, webhook signature verification, India geofence.
 
 ## Test artifacts
 
-Dynamic tests were run against `http://127.0.0.1:8000` backed by a disposable
-`postgis/postgis:16-3.4` container with synthetic accounts only; scripts and
-outputs are in the session temp dir (`%TEMP%\opencode\audit*.py`), not committed.
-The test DB and server were shut down after the audit.
+Dynamic tests were run against a local `postgis/postgis:16-3.4` container with
+synthetic accounts only; scripts and outputs are in the session temp dir
+(`%TEMP%\opencode\audit*.py`, `verify_fixes.py`), not committed. The test DB and
+servers were shut down after the re-verification.
+
+### Fix re-verification (after remediation)
+
+| Check | Result |
+|---|---|
+| Email change, no password | 403 "Current password is required to change your email." |
+| Email change, wrong password | 403 |
+| Email change, correct password | 200, email updated |
+| Name-only profile edit | 200 (unchanged behaviour) |
+| Demo endpoints, `APP_ENV=production` | 403 "Presentation demo endpoints are disabled in production." |
+| Demo endpoints, `APP_ENV=development` | 201 (presentations still work) |
+| `/predict/demand` + `/predict/heatmap` as passenger | 403 |
+| Regression: unauthenticated `/auth/me`, `/jobs/runs` | 401 |
+| Regression: `alg=none` JWT | 401 |
+| Regression: other user's ride / payment | 404 |
+| Backend suite (clean DB) | 12 failed / 42 errors — identical to the pre-change baseline (payment-concurrency, cluster-resilience, presence, pooling); no new failures |
+| Flutter suite | 168/168 pass, `flutter analyze` clean |
+

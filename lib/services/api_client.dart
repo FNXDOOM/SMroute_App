@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_env.dart';
@@ -17,9 +18,10 @@ class ApiClient {
   /// NOTE: `127.0.0.1` reaches the host only from desktop/iOS-simulator.
   /// On the Android emulator use `http://10.0.2.2:8000`; on a physical
   /// device use your production URL or your machine's LAN IP.
-  ApiClient._({String? baseUrl, http.Client? httpClient})
+  ApiClient._({String? baseUrl, http.Client? httpClient, TokenStore? tokenStore})
       : baseUrl = (baseUrl ?? AppEnv.apiBaseUrl).replaceAll(RegExp(r'/$'), ''),
-        _http = httpClient ?? http.Client();
+        _http = httpClient ?? http.Client(),
+        _tokenStore = tokenStore ?? SecureTokenStore();
 
   /// Default timeout for every request so UI loading states can't hang forever.
   static const Duration requestTimeout = Duration(seconds: 15);
@@ -30,9 +32,13 @@ class ApiClient {
   /// 401 recovery can be exercised without a live backend.
   @visibleForTesting
   factory ApiClient.withHttpClient(http.Client httpClient, {String? baseUrl}) =>
-      ApiClient._(baseUrl: baseUrl, httpClient: httpClient);
+      ApiClient._(baseUrl: baseUrl, httpClient: httpClient, tokenStore: InMemoryTokenStore());
 
-  static const String _tokenKey = 'smartroute_api_token';
+  /// The token store backing this client. Tests can inject an in-memory one.
+  final TokenStore _tokenStore;
+
+  /// Legacy plaintext key (pre-secure-storage versions wrote the token here).
+  static const String _legacyTokenKey = 'smartroute_api_token';
 
   final String baseUrl;
 
@@ -52,9 +58,36 @@ class ApiClient {
 
   Future<void> initialize() async {
     if (_initialized) return;
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString(_tokenKey);
     _initialized = true;
+    // One-time migration: a token written by an older version lives in
+    // plaintext SharedPreferences (which Android backs up). Move it to the
+    // secure store and delete the plaintext copy.
+    String? stored;
+    try {
+      stored = await _tokenStore.read();
+    } on Object {
+      // Secure storage unavailable (unit tests without the platform plugin):
+      // fall through to the legacy location below.
+      stored = null;
+    }
+    if (stored == null || stored.isEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final legacy = prefs.getString(_legacyTokenKey);
+        if (legacy != null && legacy.isNotEmpty) {
+          stored = legacy;
+          try {
+            await _tokenStore.write(legacy);
+          } on Object {
+            // Test env: in-memory token is enough.
+          }
+          await prefs.remove(_legacyTokenKey);
+        }
+      } on Object {
+        // Platform channel unavailable (unit tests) — nothing to migrate.
+      }
+    }
+    _token = stored;
   }
 
   /// Installs (or clears, with null) the live-token source.
@@ -125,11 +158,19 @@ class ApiClient {
   Future<void> setToken(String? token) async {
     await initialize();
     _token = token;
-    final prefs = await SharedPreferences.getInstance();
+    try {
+      await _tokenStore.write(token);
+    } on Object {
+      // Secure storage unavailable (unit tests): the in-memory copy is enough.
+    }
+    // Belt and braces: if a legacy plaintext copy still exists, remove it.
     if (token == null || token.isEmpty) {
-      await prefs.remove(_tokenKey);
-    } else {
-      await prefs.setString(_tokenKey, token);
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_legacyTokenKey);
+      } on Object {
+        // No platform channel in tests.
+      }
     }
   }
 
@@ -398,4 +439,43 @@ class ApiException implements Exception {
 
   @override
   String toString() => 'ApiException($statusCode, $message)';
+}
+
+/// Where the bearer token lives. The default keeps it in the platform's
+/// secure storage (Android Keystore-backed EncryptedSharedPreferences /
+/// iOS Keychain) instead of plaintext app data, so a device backup or a read
+/// of app files does not yield a working session token.
+abstract class TokenStore {
+  Future<String?> read();
+
+  Future<void> write(String? token);
+}
+
+/// Android Keystore / iOS Keychain backed storage.
+class SecureTokenStore implements TokenStore {
+  static const String _key = 'smartroute_api_token_secure';
+
+  final FlutterSecureStorage _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(),
+  );
+
+  @override
+  Future<String?> read() => _storage.read(key: _key);
+
+  @override
+  Future<void> write(String? token) =>
+      token == null || token.isEmpty
+          ? _storage.delete(key: _key)
+          : _storage.write(key: _key, value: token);
+}
+
+/// Test-only in-memory store (used by `ApiClient.withHttpClient`).
+class InMemoryTokenStore implements TokenStore {
+  String? _token;
+
+  @override
+  Future<String?> read() async => _token;
+
+  @override
+  Future<void> write(String? token) async => _token = token;
 }
