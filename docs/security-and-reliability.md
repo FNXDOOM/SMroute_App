@@ -3,8 +3,10 @@
 ## Security review
 
 - No secrets, keys or database credentials ship in the app; the bearer token is
-  the only stored credential (`shared_preferences` — use
-  `flutter_secure_storage` for a hardened production build).
+  the only stored credential, held in Keystore/Keychain-backed secure storage
+  (`flutter_secure_storage`) rather than plaintext app data. Android backups
+  are disabled (`allowBackup="false"` + backup/data-extraction rules), so the
+  token cannot leave the device through a backup or adb extraction.
 - Tokens are never logged. Dev request logging prints method/path/status/
   duration, the token's remaining lifetime (decoded from the `exp` claim only)
   and whether the request was retried — never the token itself or the
@@ -18,6 +20,51 @@
   [backend contract](./backend-contract.md#tracking-socket-revocation)).
 - Production must be HTTPS/WSS with a non-localhost origin (enforced by the
   config file you build with).
+- Cleartext HTTP is permitted only in debug builds for `10.0.2.2`, `localhost`
+  and `127.0.0.1` (`network_security_config.xml` in the debug manifest); release
+  builds keep the platform default of blocking it.
+
+## Security audit (2026-11-24)
+
+Static review of the app and the FastAPI backend, plus dynamic testing against a
+disposable local PostGIS instance with synthetic accounts (no production or
+third-party systems). **Verdict: conditional go** — no Critical/High exploitable
+holes in the API surface.
+
+**Verified as not vulnerable** (real requests, two accounts):
+
+| Test | Result |
+|---|---|
+| IDOR — read/cancel/status-change another user's ride (`/rides/{id}`, `/vehicle`, `/route`, DELETE, PATCH) | 403/404 every time |
+| IDOR — payments (`/payments/{id}`, order for someone else's ride) | 404/400, ownership enforced |
+| Unauthenticated access to rides/jobs/analytics/admin | 401 everywhere |
+| Driver-only endpoints as a passenger | 403 |
+| Register with `role:"admin"` | forced to `passenger` |
+| JWT `alg=none`, wrong-secret, garbage | 401 |
+| Login rate limit | 429 after the limit, keyed on the real client IP (not spoofable XFF); per-user limits on payments |
+| Maps proxy path traversal (`../`, `%2f`) | rejected |
+| WebSocket without/bad token | 403 |
+| Razorpay webhook bad signature | 400; amounts server-side; authorized ≠ captured |
+| Ride outside India | 422 geofence |
+| SQL injection surface | SQLAlchemy ORM / bound `text()` params only |
+
+**Findings and their status:**
+
+| ID | Finding | Status |
+|---|---|---|
+| F1 | Backend secrets in a plaintext `backend/.env` (Supabase password, Clerk secret, `LOCAL_JWT_SECRET`, Razorpay, Stadia) | **Rotate the values** in each provider dashboard and mint a new `LOCAL_JWT_SECRET`. The file is gitignored; a gitleaks pre-commit hook now prevents committing credentials. |
+| F2 | Bearer token in plaintext storage + Android backup enabled | **Fixed** — secure storage, legacy token migrated and deleted, backups disabled. |
+| F2b | 7-day local JWT has no server-side revocation (logout is client-side only) | **Open** — a `jti` denylist or shorter `LOCAL_JWT_EXPIRES_MINUTES` closes it. |
+| F3 | Email change without re-authentication | **Fixed** — `PATCH /auth/me` requires `current_password` for a local account; Clerk-owned accounts cannot change email there. |
+| F4 | Demo and demand-prediction endpoints ungated | **Fixed** — demo endpoints refuse non-admins when `APP_ENV=production` (still work in development); `/predict/*` requires admin or an active driver. |
+| F5 | No TLS certificate pinning | **Open (accepted)** — hardening item; needs a pinned certificate set. |
+
+Re-verified after the fixes: email change returns 403 without/wrong password and
+200 with it; demo endpoints 403 in production but 201 in development; `/predict`
+403 for passengers; unauthenticated, `alg=none` and cross-user requests still
+401/404. The Flutter suite passes 168/168 and the backend suite is unchanged
+from its pre-change baseline.
+
 
 ## Reliability behaviour
 

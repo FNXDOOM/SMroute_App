@@ -190,7 +190,7 @@ test/                            # 168 widget, provider, model and motion tests
 | [docs/design-system.md](docs/design-system.md) | Colour/type/spacing/motion tokens, `ui_kit` components |
 | [docs/maps.md](docs/maps.md) | Basemap resolution (Stadia proxy vs CARTO fallback), known backend issue |
 | [docs/live-ride-animation.md](docs/live-ride-animation.md) | Status-derived vehicle animation, route projection, motion mechanics |
-| [docs/security-and-reliability.md](docs/security-and-reliability.md) | Security review, reliability behaviour, troubleshooting |
+| [docs/security-and-reliability.md](docs/security-and-reliability.md) | Security review, 2026-11-24 audit findings and status, reliability behaviour, troubleshooting |
 | [docs/rfc-endpoint-registry.md](docs/rfc-endpoint-registry.md) | Proposed typed endpoint catalog (design RFC) |
 
 ## License
