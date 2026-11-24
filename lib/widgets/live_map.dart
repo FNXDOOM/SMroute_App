@@ -10,6 +10,7 @@ import '../models/shared_route.dart';
 import '../models/vehicle_animation.dart';
 import '../services/geocoding_service.dart';
 import '../services/map_tiles.dart';
+import '../services/route_trace.dart';
 import '../theme/app_theme.dart';
 
 /// A vehicle position to draw on the map.
@@ -178,6 +179,11 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
   // only the vehicle marker layer listens to [_motionFrame] — a moving car
   // never rebuilds the tiles, the route or the rest of the screen.
   final Map<String, _VehicleMotion> _motions = <String, _VehicleMotion>{};
+
+  /// Road geometry of [LiveMap.route], built once and reused until the route
+  /// itself changes — the projection surface for live fixes.
+  RouteTrace? _routeTrace;
+
   final Map<String, String> _vehicleLabels = <String, String>{};
   final ValueNotifier<int> _motionFrame = ValueNotifier<int>(0);
 
@@ -235,7 +241,7 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
       final label = vehicle.label;
       if (label != null) _vehicleLabels[vehicle.id] = label;
 
-      final target = GeoPoint(vehicle.lat, vehicle.lng);
+      final target = _snapToRoute(GeoPoint(vehicle.lat, vehicle.lng));
       final motion = _motions[vehicle.id];
       if (motion == null) {
         _motions[vehicle.id] = _VehicleMotion(target);
@@ -263,6 +269,25 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
           id != _walkVehicleId &&
           !motion.isAnimating,
     );
+  }
+
+  /// Fixes within this distance of the route polyline snap onto it, so a
+  /// vehicle glides along the road instead of drifting with GPS noise; the
+  /// website's `routeProgress` uses the same 65 m gate. Farther fixes are
+  /// drawn raw — a real detour must never be snapped onto a stale route.
+  static const double _snapToleranceMeters = 65;
+
+  /// Projects [fix] onto the route polyline when it runs within
+  /// [_snapToleranceMeters] of it; returned unchanged otherwise.
+  GeoPoint _snapToRoute(GeoPoint fix) {
+    final route = widget.route;
+    if (route.length < 2) return fix;
+    final trace = _routeTrace ??= RouteTrace.build(route);
+    final along = trace.project(fix);
+    final onRoute = trace.pointAtDistance(along).position;
+    return distanceMeters(onRoute, fix) <= _snapToleranceMeters
+        ? onRoute
+        : fix;
   }
 
   /// Starts, retargets or stops the ride's path walk.
@@ -454,9 +479,11 @@ class _LiveMapState extends State<LiveMap> with SingleTickerProviderStateMixin {
     // Motion first: a new GPS fix retargets the marker, a new ride animation
     // (status change, route arriving late, real vehicle replacing the stand-in)
     // starts a continuous walk from where the car is currently drawn.
+    if (!identical(oldWidget.route, widget.route)) _routeTrace = null;
     _syncVehicles(widget.vehicles);
     _applyAnimation(widget.vehicleAnimation);
     _syncTicker();
+
 
     // Follow mode takes precedence over fitting: while a trip is in progress
     // the camera tracks the vehicle rather than the whole route. Ignored while

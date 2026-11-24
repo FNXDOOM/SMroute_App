@@ -1372,7 +1372,15 @@ class RideProvider extends ChangeNotifier {
           }
         },
         onError: (_) => _scheduleTrackingReconnect(),
-        onDone: () => _scheduleTrackingReconnect(),
+        onDone: () {
+          // 4403 = the server revoked tracking access for this account
+          // (role or driver status changed). Reconnecting with the same
+          // identity cannot succeed — stop the socket loop and let the
+          // REST fallback keep the position fresh instead.
+          _scheduleTrackingReconnect(
+            revoked: _trackingChannel?.closeCode == 4403,
+          );
+        },
         cancelOnError: false,
       );
     }());
@@ -1381,9 +1389,15 @@ class RideProvider extends ChangeNotifier {
   /// Bounded reconnect for the tracking socket: linear backoff (2s, 4s, 6s,
   /// 8s, 10s), capped at [_maxTrackingReconnectAttempts] so a dead backend
   /// can never cause a connection storm. Stops immediately for terminal
-  /// rides or a null token (logged out).
-  void _scheduleTrackingReconnect() {
+  /// rides or a null token (logged out). A server revocation (close code
+  /// 4403) skips the socket entirely and runs the REST fallback instead —
+  /// the same identity would just be refused again.
+  void _scheduleTrackingReconnect({bool revoked = false}) {
     _teardownTrackingChannel();
+    if (revoked) {
+      _startVehiclePositionFallback();
+      return;
+    }
     if (_disposed || isRideTerminal) return;
     if (_trackingReconnectAttempts >= _maxTrackingReconnectAttempts) {
       _startVehiclePositionFallback();
