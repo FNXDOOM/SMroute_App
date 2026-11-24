@@ -195,4 +195,7 @@ test/                            # 168 widget, provider, model and motion tests
 
 ## License
 
-Educational / portfolio use.
+Licensed under the [Apache License 2.0](LICENSE). Third-party components and map
+provider attribution are listed in [NOTICE](NOTICE).
+
+Release history is in [CHANGELOG.md](CHANGELOG.md).

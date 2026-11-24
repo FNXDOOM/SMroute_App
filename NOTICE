@@ -1,0 +1,30 @@
+SmartRoute — Flutter client
+Copyright 2026 Nikhil (FNXDOOM)
+
+This product is the native Flutter client for the SmartRoute AI shared-ride
+platform (https://github.com/FNXDOOM/Smartroute), and is licensed under the
+Apache License, Version 2.0 (the "License"); you may not use this file except
+in compliance with the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+Third-party components
+----------------------
+
+This application depends on open-source packages that are governed by their own
+licenses; see `pubspec.yaml` for the dependency list and the packages' own
+repositories for the applicable terms. Notable components include Flutter and
+Dart (BSD-3-Clause, Google LLC), flutter_map (BSD-3-Clause), provider (MIT),
+http (BSD-3-Clause), web_socket_channel (BSD-3-Clause), geolocator (MIT),
+latlong2 (Apache-2.0), flutter_secure_storage (BSD-3-Clause),
+shared_preferences (BSD-3-Clause), razorpay_flutter (MIT),
+clerk_flutter / clerk_auth (see upstream), and cupertino_icons (MIT).
+
+Map data and services are provided by Stadia Maps and OpenStreetMap
+contributors; their respective terms of service and attribution requirements
+apply to map rendering.
