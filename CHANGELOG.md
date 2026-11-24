@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [1.1.0] - 2026-11-24
+
+Security, carpool and mapping release. Fixes the findings from the security
+audit and brings the pooled-ride and live-tracking work in line with the
+website.
+
 ### Added
 
 - **Carpool** — per-rider lifecycle stages and the pooled route on both maps:
@@ -128,5 +136,6 @@ First complete client release, tracking the website feature-for-feature.
 Initial scaffold: theme and design tokens, core models, `ApiClient`,
 screens/providers/widgets for the main flows, and the Android project.
 
-[Unreleased]: https://github.com/FNXDOOM/SMroute_App/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/FNXDOOM/SMroute_App/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/FNXDOOM/SMroute_App/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/FNXDOOM/SMroute_App/releases/tag/v1.0.0
